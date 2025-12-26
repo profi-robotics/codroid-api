@@ -1,0 +1,26 @@
+[project]
+name = "codroid-api"
+version = "0.1.0"
+description = "Python API client for Codroid websocket control based on captured HAR messages."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Codroid API Contributors" }
+]
+dependencies = [
+  "websockets>=12.0"
+]
+
+[project.urls]
+Repository = "https://example.com/codroid-api"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling>=1.24.2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["codroid_api"]
