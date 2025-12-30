@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from codroid_api.client import CodroidConfig
+from codroid_api.commands import RobotCommandSet, RobotControlPaths
+
+
+class CodroidSettings(BaseSettings):
+    """Codroid connection settings sourced from .env (CODROID_* variables).
+
+    Defaults match the common factory configuration; override in .env as needed.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix="CODROID_",
+        extra="ignore",
+    )
+
+    host: str = "192.168.101.100"
+    ws_port: int = 9098
+    robot_port: int = 9000
+    origin: str = "http://192.168.101.100:9098"
+    token: str = "user:admin"
+    username: str = "admin"
+    user_password: str = "123456"
+    usercode: str = ""
+    userwsid: str = ""
+    ws_user_type: str = "wsuser"
+    robot_login_name: str = "web"
+    robot_password: str = ""
+    robot_ws_type: str = "wsrobot"
+    default_language: str = "EN"
+    default_project: str = "pjmjbepucimi01gv"
+    default_task: str = "tkmjbepuci3lujj8"
+    default_label: str = "rumjcr6o3flg6kq0"
+    default_stat: int = 2
+    default_onlyapi: int = 0
+    default_mode: int = 1
+    command_power_on: int = 3
+    command_power_off: int = 5
+    command_manual_mode: int = 2
+    command_auto_mode: int = 1
+    command_move_home: int = 104
+    command_move_safe: int = 1001
+    command_move_candle: int = 1002
+    command_move_package: int = 105
+    command_move_target_linear: int = 106
+    command_move_target_optimal: int = 107
+
+    def command_set(self) -> RobotCommandSet:
+        return RobotCommandSet(
+            power_on=self.command_power_on,
+            power_off=self.command_power_off,
+            manual_mode=self.command_manual_mode,
+            auto_mode=self.command_auto_mode,
+            move_home=self.command_move_home,
+            move_safe=self.command_move_safe,
+            move_candle=self.command_move_candle,
+            move_package=self.command_move_package,
+            move_target_linear=self.command_move_target_linear,
+            move_target_optimal=self.command_move_target_optimal,
+        )
+
+    def build_user_config(self) -> CodroidConfig:
+        return CodroidConfig(
+            host=self.host,
+            port=self.ws_port,
+            origin=self.origin,
+            token=self.token,
+            username=self.username,
+            user_password=self.user_password,
+            usercode=self.usercode,
+            userwsid=self.userwsid,
+            ws_user_type=self.ws_user_type,
+            robot_login_name=self.robot_login_name,
+            robot_password=self.robot_password,
+            robot_ws_type=self.robot_ws_type,
+            default_language=self.default_language,
+            default_project=self.default_project,
+            default_task=self.default_task,
+            default_label=self.default_label,
+            default_stat=self.default_stat,
+            default_onlyapi=self.default_onlyapi,
+            default_mode=self.default_mode,
+            commands=self.command_set(),
+            control_paths=RobotControlPaths(),
+        )
+
+    def build_robot_config(self) -> CodroidConfig:
+        return CodroidConfig(
+            host=self.host,
+            port=self.robot_port,
+            origin=self.origin,
+            token=self.token,
+            username=self.username,
+            user_password=self.user_password,
+            usercode=self.usercode,
+            userwsid=self.userwsid,
+            ws_user_type=self.ws_user_type,
+            robot_login_name=self.robot_login_name,
+            robot_password=self.robot_password,
+            robot_ws_type=self.robot_ws_type,
+            default_language=self.default_language,
+            default_project=self.default_project,
+            default_task=self.default_task,
+            default_label=self.default_label,
+            default_stat=self.default_stat,
+            default_onlyapi=self.default_onlyapi,
+            default_mode=self.default_mode,
+            commands=self.command_set(),
+            control_paths=RobotControlPaths(),
+        )

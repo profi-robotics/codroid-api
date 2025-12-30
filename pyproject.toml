@@ -1,19 +1,23 @@
 [project]
 name = "codroid-api"
 version = "0.1.0"
-description = "Python API client for Codroid websocket control based on captured HAR messages."
+description = "Python API client for Codroid websocket control."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [
-  { name = "Codroid API Contributors" }
-]
+authors = [{ name = "Codroid API Contributors" }]
 dependencies = [
-  "websockets>=12.0"
+  "pydantic>=2.7.0",
+  "pydantic-settings>=2.2.1",
+  "python-dotenv>=1.0.1",
+  "websockets>=12.0",
 ]
 
 [project.urls]
-Repository = "https://example.com/codroid-api"
+Repository = "https://github.com/profi-robotics/codroid-api"
+
+[project.optional-dependencies]
+examples = ["dash>=3.3.0"]
 
 [tool.uv]
 package = true
