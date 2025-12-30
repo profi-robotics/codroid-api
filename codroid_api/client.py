@@ -4,10 +4,11 @@ import json
 import random
 import time
 import uuid
+import urllib.error
 import urllib.request
 from urllib.parse import urljoin
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional
 
 import websockets
 
@@ -774,6 +775,179 @@ class CodroidAPI:
         if not text:
             return {}
         return json.loads(text)
+
+    def _node_id(self, prefix: str) -> str:
+        return f"{prefix}{uuid.uuid4().hex[:14]}"
+
+    def _default_project_document(
+        self,
+        project_id: str,
+        label: str,
+        points: Optional[List[Dict[str, Any]]] = None,
+        mark: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Build a lean project payload that the controller accepts (minimized from HAR)."""
+        task_id = self._node_id("tk")
+        points_container_id = self._node_id("po")
+        return {
+            "children": [
+                {
+                    "type": "task",
+                    "id": task_id,
+                    "label": "main1",
+                    "uuid": 1,
+                    "typeedit": "widgets",
+                    "typetask": "main",
+                    "parents": [project_id],
+                    "children": [
+                        {
+                            "type": "points",
+                            "id": points_container_id,
+                            "label": "Points",
+                            "uuid": 1,
+                            "hideoperate": True,
+                            "showchildren": True,
+                            "parents": [project_id, task_id],
+                            "children": points or [],
+                        },
+                    ],
+                }
+            ],
+            "ver": "1.6.3c",
+            "uuid": 1,
+            "type": "project",
+            "id": project_id,
+            "label": label,
+            "hideoperate": True,
+            "mark": mark or self._now_ms(),
+            "customconfig": {
+                "merge": ["points"],
+                "robotjoint": 6,
+                "robotjointex": 0,
+                "robot3d": "axisModel",
+            },
+            "doing": {"tasks": {"type": "widgets", "main": "", "current": "", "play": []}, "vars": ""},
+            "points": True,
+        }
+
+    def _get_points_list(self, project: Dict[str, Any]) -> List[Dict[str, Any]]:
+        children = project.get("children") or []
+        if not children:
+            raise ValueError("Project has no task nodes.")
+        task = children[0]
+        blocks = task.get("children") or []
+        for block in blocks:
+            if block.get("type") == "points":
+                block.setdefault("children", [])
+                return block["children"]
+        raise ValueError("Points container not found in project document.")
+
+    def _ensure_point_defaults(self, point: Dict[str, Any]) -> Dict[str, Any]:
+        payload = copy.deepcopy(point)
+        payload.setdefault("type", "point")
+        payload.setdefault("icon", "point")
+        payload.setdefault("id", self._node_id("pt"))
+        payload.setdefault("status", 0)
+        payload.setdefault("datatype", "value")
+        payload.setdefault("parents", [])
+        payload.setdefault("children", [])
+        payload.setdefault("candrop", True)
+        payload.setdefault("showchildren", True)
+        payload.setdefault("attrshow", True)
+        return payload
+
+    async def read_project(self, project_id: str) -> Dict[str, Any]:
+        """Fetch a project (.crp) file and return the parsed JSON document."""
+        resp = await self._http_json(f"/robot/project/read?id={project_id}", method="GET")
+        data = resp.get("data") or []
+        if not data or "content" not in data[0]:
+            raise RuntimeError(f"No project content returned for {project_id}.")
+        content = data[0]["content"]
+        return json.loads(content)
+
+    async def save_project(self, project: Dict[str, Any]) -> Dict[str, Any]:
+        """Save a project document via HTTP."""
+        return await self._http_json("/robot/project/edit", method="POST", payload=project)
+
+    async def create_project(
+        self,
+        label: str,
+        project_id: Optional[str] = None,
+        points: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Create a new empty project on the controller."""
+        pid = project_id or self._node_id("pj")
+        project = self._default_project_document(pid, label, points=points)
+        response = await self.save_project(project)
+        return {"id": pid, "label": label, "response": response, "project": project}
+
+    async def upsert_point(
+        self,
+        project_id: str,
+        point: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Add or update a point in a project, then save it."""
+        project = await self.read_project(project_id)
+        points_list = self._get_points_list(project)
+        point_payload = self._ensure_point_defaults(point)
+        updated = False
+        for idx, existing in enumerate(points_list):
+            if existing.get("id") == point_payload["id"]:
+                points_list[idx] = point_payload
+                updated = True
+                break
+        if not updated:
+            points_list.append(point_payload)
+        response = await self.save_project(project)
+        return {"response": response, "project": project, "point": point_payload}
+
+    async def delete_point(
+        self,
+        project_id: str,
+        point_id: Optional[str] = None,
+        label: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Remove a point (by id or label) and save the project."""
+        if not point_id and not label:
+            raise ValueError("point_id or label is required to delete a point.")
+        project = await self.read_project(project_id)
+        points_list = self._get_points_list(project)
+        remaining = []
+        removed = []
+        for p in points_list:
+            if (point_id and p.get("id") == point_id) or (label and p.get("label") == label):
+                removed.append(p)
+                continue
+            remaining.append(p)
+        if not removed:
+            raise ValueError("No matching point found to delete.")
+        points_list[:] = remaining
+        response = await self.save_project(project)
+        return {"response": response, "project": project, "removed": removed}
+
+    async def delete_project(self, project_id: str) -> Dict[str, Any]:
+        """Delete a project via the HTTP endpoint (/robot/project/del?id=...)."""
+
+        def _delete_sync() -> Dict[str, Any]:
+            url = urljoin(self._http_base_url() + "/", f"robot/project/del?id={project_id}")
+            req = urllib.request.Request(url)
+            try:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    body = resp.read().decode("utf-8", "replace")
+                    try:
+                        parsed = json.loads(body)
+                    except json.JSONDecodeError:
+                        parsed = body
+                    return {"status": resp.status, "reason": resp.reason, "body": parsed, "raw": body}
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", "replace") if exc.fp else ""
+                try:
+                    parsed = json.loads(body)
+                except json.JSONDecodeError:
+                    parsed = body
+                return {"status": exc.code, "reason": exc.reason, "body": parsed, "raw": body}
+
+        return await asyncio.to_thread(_delete_sync)
 
     def _make_message_id(self) -> str:
         return f"ws{uuid.uuid4().hex[:16]}"

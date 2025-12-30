@@ -75,6 +75,29 @@ Point move loop example:
 uv run python examples/point_loop.py
 ```
 
+## Project and point helpers (HTTP)
+
+The API now includes HTTP helpers to manage project files:
+
+```python
+# Create a fresh project with no points.
+result = await api.create_project(label="NewProject")
+project_id = result["id"]
+
+# Add or update a point (provide the full point dict).
+await api.upsert_point(project_id, {"label": "P1", "postype": "cpos", "data": {...}})
+
+# Delete a point by id or label.
+await api.delete_point(project_id, point_id="pt123")
+
+# Read and save whole project documents directly.
+project_doc = await api.read_project(project_id)
+await api.save_project(project_doc)
+
+# Delete a project (uses /robot/project/del?id=...).
+await api.delete_project(project_id)
+```
+
 ## Manual jog and point moves
 
 The point-creation capture uses `jogMode/jogIndex/jogSpeed` for manual jogging and
