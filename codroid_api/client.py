@@ -516,6 +516,40 @@ class CodroidAPI:
         await self.set_target_cpos(position)
         await self.move_to_target_optimal(reset_after=reset_after)
 
+    async def move_to_coordinate_origin(
+        self,
+        coordinate_id: int,
+        linear: bool = True,
+        reset_after: bool = True,
+        hold_seconds: float = 5.0,
+        heartbeat_interval: float = 0.5,
+    ) -> None:
+        """Move the robot to the origin of a user coordinate frame."""
+        origin = self.build_target_cpos(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        origin = self.attach_coordinate_to_cpos(origin, coordinate_id=coordinate_id)
+
+        # Select the coordinate slot so downstream publishes reflect the correct frame.
+        await self.set_current_coordinate_id(coordinate_id)
+
+        await self.set_target_pos_type(self.config.target_pos_types.cpos)
+        await self.set_target_cpos(origin)
+        command = (
+            self.config.commands.move_target_linear
+            if linear
+            else self.config.commands.move_target_optimal
+        )
+        await self.set_robot_command(command)
+
+        if hold_seconds > 0:
+            deadline = time.monotonic() + hold_seconds
+            while time.monotonic() < deadline:
+                await self.send_command_heartbeat()
+                await asyncio.sleep(heartbeat_interval)
+
+        if reset_after:
+            await self.clear_target_position()
+            await self.stop_command()
+
     async def update_posture(
         self,
         x: float,

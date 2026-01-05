@@ -153,6 +153,20 @@ async with CodroidAPI(robot_config) as api:
 
 See `examples/button_listener.py` for a runnable script.
 
+### Move to a user-coordinate origin
+
+To jog the robot to the origin of a calibrated user frame (e.g., coordinate ID 6):
+
+```python
+async with CodroidAPI(robot_config) as api:
+    await api.robot_login()
+    await api.move_to_coordinate_origin(
+        coordinate_id=6,
+        linear=True,          # or False for optimal-path move
+        hold_seconds=5.0,     # send command heartbeats while motion executes
+    )
+```
+
 ## Inspect the capture
 
 List the unique actions captured in the HAR:
