@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import copy
 import json
 import random
@@ -8,7 +9,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urljoin
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional, Tuple
 
 import websockets
 
@@ -618,6 +619,107 @@ class CodroidAPI:
         )
         await self.send_message(payload)
 
+    @staticmethod
+    def attach_coordinate_to_cpos(
+        cpos: Dict[str, Any],
+        coordinate_id: int,
+    ) -> Dict[str, Any]:
+        """Return a CPOS payload tagged with the desired user coordinate ID."""
+        payload = copy.deepcopy(cpos)
+        payload.setdefault("e", 0.0)
+        payload.setdefault("poscfg", CodroidAPI.build_poscfg())
+        for idx in range(1, 11):
+            payload.setdefault(f"exjntpos{idx}", 0.0)
+        payload["coord"] = {
+            "datavar": {
+                "default": "DEFAULT",
+                "type": "USERCOOR",
+                "value": coordinate_id,
+            }
+        }
+        return payload
+
+    async def coordinate_calibration(
+        self,
+        points: Iterable[Dict[str, Any]],
+        coordinate_id: int,
+        timeout: float = 5.0,
+        set_active_coordinate: bool = True,
+    ) -> Dict[str, Any]:
+        """Run a three-point coordinate calibration and return the computed frame.
+
+        Args:
+            points: Iterable of three CPOS-like dictionaries (x, y, z, a, b, c, etc.).
+            coordinate_id: User coordinate slot to tag in the calibration payload.
+            timeout: Seconds to wait for the CoordinateCalibration response.
+            set_active_coordinate: When True, send SetCurrentCoordinateId before calibrating.
+        """
+        payload_points: List[Dict[str, Any]] = []
+        for point in points:
+            payload_points.append(
+                self.attach_coordinate_to_cpos(point, coordinate_id=coordinate_id)
+            )
+
+        if len(payload_points) != 3:
+            raise ValueError("Coordinate calibration requires exactly three points.")
+
+        if set_active_coordinate:
+            await self.set_current_coordinate_id(coordinate_id)
+
+        message = self.build_message(
+            message_type="Robot",
+            action="CoordinateCalibration",
+            data=payload_points,
+        )
+
+        def _is_calibration_response(msg: Dict[str, Any]) -> bool:
+            return (
+                msg.get("type") == "Robot"
+                and msg.get("action") == "CoordinateCalibration"
+            )
+
+        response = await self.send_and_wait(
+            message,
+            predicate=_is_calibration_response,
+            timeout=timeout,
+        )
+        return (response.get("data") or {}).get("data", {})
+
+    async def change_coordinate_parameter(
+        self,
+        coordinate_id: int,
+        frame: Dict[str, Any],
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Persist a calibrated coordinate frame into a user coordinate slot."""
+        payload = {
+            "id": coordinate_id,
+            "x": frame["x"],
+            "y": frame["y"],
+            "z": frame["z"],
+            "a": frame["a"],
+            "b": frame["b"],
+            "c": frame["c"],
+        }
+        message = self.build_message(
+            message_type="Robot",
+            action="ChangeCoordinateParameter",
+            data=payload,
+        )
+
+        def _is_change_response(msg: Dict[str, Any]) -> bool:
+            return (
+                msg.get("type") == "Robot"
+                and msg.get("action") == "ChangeCoordinateParameter"
+            )
+
+        response = await self.send_and_wait(
+            message,
+            predicate=_is_change_response,
+            timeout=timeout,
+        )
+        return (response.get("data") or {}).get("data", {})
+
     async def move_home(self, hold_seconds: float = 0.0) -> None:
         """Move to the Home preset; optionally hold with heartbeat."""
         await self._move_to_preset(self.config.commands.move_home, hold_seconds)
@@ -676,9 +778,196 @@ class CodroidAPI:
         payload = self.build_message(message_type="common", action="getLogFileList", data={})
         await self.send_message(payload)
 
+    @staticmethod
+    def parse_io_info(message: Dict[str, Any]) -> Dict[str, Dict[int, str]]:
+        """Extract IO names from an IOManager/GetIOInfo response."""
+        data = (message.get("data") or {}).get("data") or {}
+        result: Dict[str, Dict[int, str]] = {}
+        for key in ("DI", "DO", "AI", "AO"):
+            entries = data.get(key) or []
+            ports: Dict[int, str] = {}
+            for entry in entries:
+                try:
+                    port = int(entry.get("port"))
+                except Exception:
+                    continue
+                name = str(entry.get("name") or port)
+                ports[port] = name
+            if ports:
+                result[key] = ports
+        return result
+
+    @staticmethod
+    def extract_di_state(message: Dict[str, Any]) -> Dict[int, int]:
+        """Return DI state map (port -> value) from any websocket payload if present."""
+
+        def _parse_di_payload(payload: Any) -> Dict[int, int]:
+            states: Dict[int, int] = {}
+            if isinstance(payload, list):
+                # List of dicts or list of ints.
+                if payload and isinstance(payload[0], dict):
+                    for item in payload:
+                        try:
+                            port = int(item.get("port"))
+                        except Exception:
+                            continue
+                        value = item.get("value")
+                        if value is None:
+                            value = item.get("forced")
+                        try:
+                            states[port] = int(value)
+                        except Exception:
+                            states[port] = 0
+                else:
+                    for idx, value in enumerate(payload):
+                        try:
+                            states[idx] = int(value)
+                        except Exception:
+                            states[idx] = 0
+            elif isinstance(payload, dict):
+                for key, value in payload.items():
+                    try:
+                        port = int(key)
+                    except Exception:
+                        continue
+                    try:
+                        states[port] = int(value)
+                    except Exception:
+                        states[port] = 0
+            return states
+
+        di_states: Dict[int, int] = {}
+
+        # Fast path: IOManager/GetIOValue response.
+        if (
+            message.get("type") == "IOManager"
+            and message.get("action") == "GetIOValue"
+        ):
+            payload = (message.get("data") or {}).get("data") or []
+            di_states.update(_parse_di_payload(payload))
+            if di_states:
+                return di_states
+
+        def _walk(obj: Any) -> None:
+            nonlocal di_states
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    lowered = key.lower()
+                    if lowered in {"di", "distate", "di_state"}:
+                        di_states.update(_parse_di_payload(value))
+                    else:
+                        _walk(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _walk(item)
+
+        _walk(message)
+        return di_states
+
     async def get_io_info(self) -> None:
         payload = self.build_message(message_type="IOManager", action="GetIOInfo", data="")
         await self.send_message(payload)
+
+    async def watch_di_changes(
+        self,
+        ports: Optional[Iterable[int]] = None,
+        interval: float = 0.2,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Yield DI edge events by polling IOManager/GetIOValue.
+
+        Args:
+            ports: Iterable of DI ports to poll. If None, will use the DI list
+                returned from the first GetIOInfo response; otherwise falls back
+                to the pendant/flange DI defaults observed in the UI (0–15, 32,
+                33, 40–45).
+            interval: Polling interval in seconds.
+
+        Yields:
+            Dict with keys: port (int), value (int), label (str).
+        """
+        default_ports: Tuple[int, ...] = (
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            32,
+            33,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+        )
+        di_ports: List[int] = list(ports) if ports is not None else []
+        button_labels: Dict[int, str] = {}
+        di_state: Dict[int, int] = {}
+        queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+
+        async def _listener() -> None:
+            nonlocal di_ports, button_labels, di_state
+            async for msg in self.listen():
+                if msg.get("type") == "IOManager" and msg.get("action") == "GetIOInfo":
+                    io_names = self.parse_io_info(msg)
+                    di_names = io_names.get("DI") or {}
+                    if di_names:
+                        button_labels.update(di_names)
+                        if not di_ports:
+                            di_ports = sorted(di_names.keys())
+
+                current = self.extract_di_state(msg)
+                if not current:
+                    continue
+                for port, value in current.items():
+                    prev = di_state.get(port)
+                    if prev is not None and prev != value:
+                        queue.put_nowait(
+                            {
+                                "port": port,
+                                "value": value,
+                                "label": button_labels.get(port, f"DI{port}"),
+                            }
+                        )
+                    di_state[port] = value
+
+        listener_task = asyncio.create_task(_listener())
+        try:
+            # Kick off GetIOInfo to populate labels/ports if needed.
+            if not di_ports:
+                await self.get_io_info()
+
+            while True:
+                poll_ports = di_ports or list(default_ports)
+                request = self.build_message(
+                    message_type="IOManager",
+                    action="GetIOValue",
+                    data=poll_ports,
+                )
+                await self.send_message(request)
+
+                # Drain any queued edges before sleeping.
+                while not queue.empty():
+                    try:
+                        yield queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                await asyncio.sleep(interval)
+        finally:
+            listener_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await listener_task
 
     async def set_language(self, language: Optional[str] = None) -> None:
         payload = self.build_message(

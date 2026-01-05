@@ -120,7 +120,38 @@ await robot_api.move_to_joint_target_linear(apos)
 poscfg = CodroidAPI.build_poscfg(mode=4)
 cpos = CodroidAPI.build_target_cpos(x, y, z, a, b, c, poscfg=poscfg)
 await robot_api.move_to_cartesian_target_optimal(cpos)
+
+# Coordinate calibration (3-point) tagged to user coordinate 5.
+raw_points = [
+    CodroidAPI.build_target_cpos(x1, y1, z1, a1, b1, c1),
+    CodroidAPI.build_target_cpos(x2, y2, z2, a2, b2, c2),
+    CodroidAPI.build_target_cpos(x3, y3, z3, a3, b3, c3),
+]
+calibrated_frame = await robot_api.coordinate_calibration(
+    raw_points,
+    coordinate_id=5,
+    set_active_coordinate=True,
+)
+# Persist the frame into the user coordinate slot (matches HAR behavior).
+await robot_api.change_coordinate_parameter(coordinate_id=5, frame=calibrated_frame)
+print("Calibrated user frame:", calibrated_frame)
+
+# See also: the interactive three-point workflow in examples/coordinate_calibration.py
+await robot_api.close()
 ```
+
+### Button/DI monitoring
+
+The Web UI polls DI ports for pendant/flange buttons via `IOManager/GetIOValue`. You can stream DI edges directly:
+
+```python
+async with CodroidAPI(robot_config) as api:
+    await api.robot_login()
+    async for event in api.watch_di_changes():  # polls ports 0–15, 32, 33, 40–45
+        print(event["label"], "->", event["value"])
+```
+
+See `examples/button_listener.py` for a runnable script.
 
 ## Inspect the capture
 
