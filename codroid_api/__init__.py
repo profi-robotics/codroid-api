@@ -9,6 +9,7 @@ from codroid_api.commands import (
     RobotJogReference,
     RobotTargetPosType,
 )
+from codroid_api.robot_session import RobotPosture, RobotSession
 from codroid_api.settings import CodroidSettings
 
 __all__ = [
@@ -20,6 +21,8 @@ __all__ = [
     "RobotJogMode",
     "RobotJogReference",
     "RobotTargetPosType",
+    "RobotPosture",
+    "RobotSession",
     "CodroidCapture",
     "CaptureMessage",
     "extract_send_messages",

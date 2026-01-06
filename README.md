@@ -75,6 +75,24 @@ Point move loop example:
 uv run python examples/point_loop.py
 ```
 
+## Persistent session helper
+
+Use `RobotSession` when you want a single long-lived user+robot websocket
+with posture/DI monitoring managed for you (e.g., UI apps):
+
+```python
+from codroid_api import RobotSession
+
+
+async def main() -> None:
+    session = RobotSession()
+    await session.connect("ws://192.168.101.100:9000/")
+    # Access the latest posture snapshot at any time.
+    posture = session.position_snapshot()
+    print("Posture:", posture.x, posture.y, posture.z)
+    await session.close()
+```
+
 ## Project and point helpers (HTTP)
 
 The API now includes HTTP helpers to manage project files:
