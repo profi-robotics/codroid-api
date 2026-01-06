@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Dict, Iterable, Optional, TypeVar
 from urllib.parse import urlparse
 
 from codroid_api.client import CodroidAPI
@@ -39,17 +39,26 @@ class RobotSession:
         settings: Optional[CodroidSettings] = None,
         *,
         flange_button_port: int = 41,
+        flange_button_ports: Optional[Iterable[int]] = None,
         io_poll_interval: float = 0.2,
     ) -> None:
         self._settings = settings or CodroidSettings()
-        self._flange_button_port = flange_button_port
+        self._primary_flange_port = flange_button_port
+        if flange_button_ports is None:
+            flange_button_ports = (flange_button_port,)
+        self._flange_button_ports = tuple(flange_button_ports)
         self._io_poll_interval = io_poll_interval
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._loop_lock = threading.Lock()
         self._position_lock = threading.Lock()
+        self._press_lock = threading.Lock()
+        self._di_lock = threading.Lock()
         self._position = RobotPosture()
         self._posture_seen = False
+        self._last_press_timestamp: Optional[float] = None
+        self._press_count = 0
+        self._di_state: Dict[int, int] = {}
 
         self.user_api: Optional[CodroidAPI] = None
         self.user_uri: Optional[str] = None
@@ -109,6 +118,11 @@ class RobotSession:
         with self._position_lock:
             self._position = RobotPosture()
             self._posture_seen = False
+        with self._press_lock:
+            self._last_press_timestamp = None
+            self._press_count = 0
+        with self._di_lock:
+            self._di_state = {}
 
     def posture_seen(self) -> bool:
         with self._position_lock:
@@ -117,6 +131,23 @@ class RobotSession:
     def position_snapshot(self) -> RobotPosture:
         with self._position_lock:
             return replace(self._position)
+
+    def flange_press_age_seconds(self) -> Optional[float]:
+        with self._press_lock:
+            if self._last_press_timestamp is None:
+                return None
+            return time.time() - self._last_press_timestamp
+
+    def flange_pressed_recently(self, window_s: float = 1.0) -> bool:
+        age = self.flange_press_age_seconds()
+        return age is not None and age <= window_s
+
+    def flange_button_states(self) -> Dict[int, int]:
+        with self._di_lock:
+            return {
+                port: int(self._di_state.get(port, 0))
+                for port in self._flange_button_ports
+            }
 
     def is_connected(self, robot_uri: str) -> bool:
         resolved_uri = robot_uri or self.default_robot_uri()
@@ -293,7 +324,8 @@ class RobotSession:
         await self._ensure_user_connection_on_loop(settings)
 
         if self.robot_api is not None and self.robot_uri == resolved_uri:
-            LOGGER.debug("Reusing existing robot connection to %s", resolved_uri)
+            LOGGER.debug(
+                "Reusing existing robot connection to %s", resolved_uri)
             await self._ensure_robot_monitor(self.robot_api)
             return self.robot_api
 
@@ -355,15 +387,9 @@ class RobotSession:
         async def _listener() -> None:
             latest_posture: Dict[str, Any] = {}
             di_state: Dict[int, int] = {}
-            message_count = 0
             LOGGER.info("Listener task started, waiting for robot messages...")
             try:
                 async for msg in robot_api.listen():
-                    message_count += 1
-                    if message_count % 50 == 0:
-                        LOGGER.debug(
-                            "Received %d listener messages so far", message_count
-                        )
                     action = msg.get("action")
                     if action == "RobotPosture":
                         data = (msg.get("data") or {}).get("data") or {}
@@ -379,21 +405,27 @@ class RobotSession:
                                 c=float(latest_posture.get("c", 0.0)),
                                 timestamp=time.time(),
                             )
-                        LOGGER.debug(
-                            "RobotPosture: x=%.1f, y=%.1f, z=%.1f",
-                            latest_posture.get("x", 0.0),
-                            latest_posture.get("y", 0.0),
-                            latest_posture.get("z", 0.0),
-                        )
+                        # LOGGER.debug(
+                        #     "RobotPosture: x=%.1f, y=%.1f, z=%.1f",
+                        #     latest_posture.get("x", 0.0),
+                        #     latest_posture.get("y", 0.0),
+                        #     latest_posture.get("z", 0.0),
+                        # )
                     di = CodroidAPI.extract_di_state(msg)
-                    if di and self._flange_button_port in di:
-                        prev = di_state.get(self._flange_button_port)
-                        di_state[self._flange_button_port] = di[
-                            self._flange_button_port
+                    if di:
+                        with self._di_lock:
+                            self._di_state.update(
+                                {int(port): int(value)
+                                 for port, value in di.items()}
+                            )
+                    if di and self._primary_flange_port in di:
+                        prev = di_state.get(self._primary_flange_port)
+                        di_state[self._primary_flange_port] = di[
+                            self._primary_flange_port
                         ]
                         if (
-                            prev != di[self._flange_button_port]
-                            and di[self._flange_button_port] == 1
+                            prev != di[self._primary_flange_port]
+                            and di[self._primary_flange_port] == 1
                         ):
                             queue = self.robot_press_queue
                             if latest_posture and queue is not None:
@@ -401,6 +433,9 @@ class RobotSession:
                                     "Flange button pressed with posture: %s",
                                     latest_posture,
                                 )
+                                with self._press_lock:
+                                    self._last_press_timestamp = time.time()
+                                    self._press_count += 1
                                 queue.put_nowait(latest_posture.copy())
                             else:
                                 LOGGER.warning(
@@ -417,7 +452,7 @@ class RobotSession:
                 request = robot_api.build_message(
                     message_type="IOManager",
                     action="GetIOValue",
-                    data=[self._flange_button_port],
+                    data=list(self._flange_button_ports),
                 )
                 await robot_api.send_message(request)
                 await asyncio.sleep(self._io_poll_interval)
