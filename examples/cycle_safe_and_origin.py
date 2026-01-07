@@ -16,7 +16,7 @@ async def main() -> None:
     settings = CodroidSettings()
     robot_config = settings.build_robot_config()
 
-    coordinate_id = 6       # calibrated user coordinate slot
+    coordinate_id = 5       # calibrated user coordinate slot
     hold_seconds = 5.0      # heartbeat duration for each move command
     dwell_seconds = 1.0     # pause after each move
 

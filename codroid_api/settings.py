@@ -39,10 +39,10 @@ class CodroidSettings(BaseSettings):
     default_stat: int = 2
     default_onlyapi: int = 0
     default_mode: int = 1
-    command_power_on: int = 3
-    command_power_off: int = 5
-    command_manual_mode: int = 2
-    command_auto_mode: int = 1
+    command_power_on: int = 1
+    command_power_off: int = 2
+    command_manual_mode: int = 3
+    command_auto_mode: int = 5
     command_move_home: int = 104
     command_move_safe: int = 1001
     command_move_candle: int = 1002

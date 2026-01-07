@@ -9,10 +9,10 @@ class RobotCommandSet:
     """
 
     # Power and mode control.
-    power_on: int = 3
-    power_off: int = 5
-    manual_mode: int = 2
-    auto_mode: int = 1
+    power_on: int = 1
+    power_off: int = 2
+    manual_mode: int = 3
+    auto_mode: int = 5
 
     # Preset moves (held command with heartbeat in the UI).
     move_home: int = 104
