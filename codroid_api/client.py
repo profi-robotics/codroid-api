@@ -644,14 +644,40 @@ class CodroidAPI:
             payload[f"exjntpos{idx}"] = value
         return payload
 
-    async def set_current_coordinate_id(self, coordinate_id: int) -> None:
-        """Select the active coordinate system."""
+    async def set_current_coordinate_id(
+        self,
+        coordinate_id: int,
+        *,
+        await_ack: bool = False,
+        timeout: float = 5.0,
+    ) -> Optional[Dict[str, Any]]:
+        """Select the active coordinate system.
+
+        When await_ack is True, waits for the SetCurrentCoordinateId response.
+        Avoid await_ack when another task is already consuming listen()/recv().
+        """
         payload = self.build_message(
             message_type="Robot",
             action="SetCurrentCoordinateId",
             data=coordinate_id,
         )
-        await self.send_message(payload)
+        if not await_ack:
+            await self.send_message(payload)
+            return None
+
+        def _is_coordinate_response(msg: Dict[str, Any]) -> bool:
+            return (
+                msg.get("type") == "Robot"
+                and msg.get("action") == "SetCurrentCoordinateId"
+                and msg.get("id") == payload["id"]
+            )
+
+        response = await self.send_and_wait(
+            payload,
+            predicate=_is_coordinate_response,
+            timeout=timeout,
+        )
+        return (response.get("data") or {}).get("data", {})
 
     @staticmethod
     def attach_coordinate_to_cpos(

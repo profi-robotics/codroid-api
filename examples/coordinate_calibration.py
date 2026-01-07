@@ -4,6 +4,7 @@ Interactive three-point coordinate calibration using CodroidAPI.
 Steps:
 - Connect to the robot WS channel and track the latest TCP posture.
 - Prompt the user to move the robot to three points and press Enter each time.
+- Ensure CoordinateId 0 (base) is active before capturing points.
 - Send the `Robot/CoordinateCalibration` request tagged to user coordinate ID 6.
 """
 
@@ -66,15 +67,39 @@ async def main() -> None:
         listener_task = asyncio.create_task(_listener())
 
         try:
-            # Ensure we are on coordinate 6 (matches requested flow)
-            coordinate_event.clear()
-            await robot_api.set_current_coordinate_id(coordinate_id)
-            try:
-                await asyncio.wait_for(coordinate_event.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                print(f"Warning: no RobotStatus received after setting CoordinateId={coordinate_id}; continuing.")
-            if current_coordinate_id != coordinate_id:
-                print(f"Warning: expected CoordinateId {coordinate_id}, got {current_coordinate_id}")
+            async def _ensure_coordinate_id(
+                expected_id: int,
+                *,
+                require: bool = True,
+                timeout_s: float = 5.0,
+            ) -> bool:
+                deadline = asyncio.get_running_loop().time() + timeout_s
+                coordinate_event.clear()
+                await robot_api.set_current_coordinate_id(expected_id)
+                while asyncio.get_running_loop().time() < deadline:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    try:
+                        await asyncio.wait_for(
+                            coordinate_event.wait(), timeout=min(0.5, remaining)
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    if current_coordinate_id == expected_id:
+                        return True
+                    coordinate_event.clear()
+
+                message = (
+                    f"Expected CoordinateId {expected_id}, got {current_coordinate_id}."
+                )
+                if require:
+                    print(f"Error: {message} Calibration aborted.")
+                else:
+                    print(f"Warning: {message} Continuing anyway.")
+                return False
+
+            # Require base coordinate (ID 0) for accurate posture capture.
+            if not await _ensure_coordinate_id(0, require=True):
+                return
 
             points = []
             for idx in range(1, 4):
@@ -91,6 +116,9 @@ async def main() -> None:
                 )
                 points.append(cpos)
                 print(f"Captured point {idx}: {latest_posture}")
+
+            # Switch to the target coordinate slot before calibration/persist.
+            await _ensure_coordinate_id(coordinate_id, require=False)
 
             # Send calibration request and wait for response via listener
             calibration_future = asyncio.get_running_loop().create_future()

@@ -54,11 +54,20 @@ class RobotSession:
         self._position_lock = threading.Lock()
         self._press_lock = threading.Lock()
         self._di_lock = threading.Lock()
+        self._status_lock = threading.Lock()
+        self._coordinate_lock = threading.Lock()
+        self._calibration_lock = threading.Lock()
         self._position = RobotPosture()
         self._posture_seen = False
         self._last_press_timestamp: Optional[float] = None
         self._press_count = 0
         self._di_state: Dict[int, int] = {}
+        self._robot_status: Dict[str, Any] = {}
+        self._robot_status_timestamp: Optional[float] = None
+        self._robot_coordinate: Dict[str, Any] = {}
+        self._robot_coordinate_timestamp: Optional[float] = None
+        self._robot_calibration_frame: Dict[str, Any] = {}
+        self._robot_calibration_timestamp: Optional[float] = None
 
         self.user_api: Optional[CodroidAPI] = None
         self.user_uri: Optional[str] = None
@@ -123,6 +132,15 @@ class RobotSession:
             self._press_count = 0
         with self._di_lock:
             self._di_state = {}
+        with self._status_lock:
+            self._robot_status = {}
+            self._robot_status_timestamp = None
+        with self._coordinate_lock:
+            self._robot_coordinate = {}
+            self._robot_coordinate_timestamp = None
+        with self._calibration_lock:
+            self._robot_calibration_frame = {}
+            self._robot_calibration_timestamp = None
 
     def posture_seen(self) -> bool:
         with self._position_lock:
@@ -148,6 +166,46 @@ class RobotSession:
                 port: int(self._di_state.get(port, 0))
                 for port in self._flange_button_ports
             }
+
+    def robot_status_snapshot(self) -> Dict[str, Any]:
+        with self._status_lock:
+            return dict(self._robot_status)
+
+    def robot_status_age_seconds(self) -> Optional[float]:
+        with self._status_lock:
+            if self._robot_status_timestamp is None:
+                return None
+            return time.time() - self._robot_status_timestamp
+
+    def robot_power_on(self) -> Optional[bool]:
+        status = self.robot_status_snapshot()
+        if not status:
+            return None
+        for key in ("PowerOn", "Power", "power", "servo", "Servo"):
+            if key not in status:
+                continue
+            value = status.get(key)
+            if isinstance(value, (int, float)):
+                return bool(value)
+            if isinstance(value, str):
+                return value.lower() in {"1", "true", "on", "enabled"}
+        return None
+
+    def coordinate_frame_snapshot(self) -> Dict[str, Any]:
+        with self._coordinate_lock:
+            return dict(self._robot_coordinate)
+
+    def coordinate_frame_timestamp(self) -> Optional[float]:
+        with self._coordinate_lock:
+            return self._robot_coordinate_timestamp
+
+    def calibration_frame_snapshot(self) -> Dict[str, Any]:
+        with self._calibration_lock:
+            return dict(self._robot_calibration_frame)
+
+    def calibration_frame_timestamp(self) -> Optional[float]:
+        with self._calibration_lock:
+            return self._robot_calibration_timestamp
 
     def is_connected(self, robot_uri: str) -> bool:
         resolved_uri = robot_uri or self.default_robot_uri()
@@ -391,6 +449,7 @@ class RobotSession:
             try:
                 async for msg in robot_api.listen():
                     action = msg.get("action")
+                    msg_type = msg.get("type")
                     if action == "RobotPosture":
                         data = (msg.get("data") or {}).get("data") or {}
                         latest_posture = data.get("end") or latest_posture
@@ -405,11 +464,31 @@ class RobotSession:
                                 c=float(latest_posture.get("c", 0.0)),
                                 timestamp=time.time(),
                             )
-                        # LOGGER.debug(
-                        #     "RobotPosture: x=%.1f, y=%.1f, z=%.1f",
-                        #     latest_posture.get("x", 0.0),
-                        #     latest_posture.get("y", 0.0),
-                        #     latest_posture.get("z", 0.0),
+                    if action == "RobotStatus":
+                        status_payload = (msg.get("data") or {}).get("data") or {}
+                        status = status_payload.get("data") or status_payload
+                        if isinstance(status, dict):
+                            with self._status_lock:
+                                self._robot_status = dict(status)
+                                self._robot_status_timestamp = time.time()
+                    if action == "RobotCoordinate":
+                        data = (msg.get("data") or {}).get("data") or {}
+                        frame = data.get("user") or data
+                        if isinstance(frame, dict):
+                            with self._coordinate_lock:
+                                self._robot_coordinate = dict(frame)
+                                self._robot_coordinate_timestamp = time.time()
+                    if msg_type == "Robot" and action == "CoordinateCalibration":
+                        payload = (msg.get("data") or {}).get("data") or {}
+                        if isinstance(payload, dict) and payload:
+                            with self._calibration_lock:
+                                self._robot_calibration_frame = dict(payload)
+                                self._robot_calibration_timestamp = time.time()
+                    # LOGGER.debug(
+                    #     "RobotPosture: x=%.1f, y=%.1f, z=%.1f",
+                    #     latest_posture.get("x", 0.0),
+                    #     latest_posture.get("y", 0.0),
+                    #     latest_posture.get("z", 0.0),
                         # )
                     di = CodroidAPI.extract_di_state(msg)
                     if di:
