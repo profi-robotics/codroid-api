@@ -181,15 +181,55 @@ class RobotSession:
         status = self.robot_status_snapshot()
         if not status:
             return None
-        for key in ("PowerOn", "Power", "power", "servo", "Servo"):
-            if key not in status:
-                continue
-            value = status.get(key)
+        power_keys = (
+            "PowerOn",
+            "Power",
+            "power",
+            "servo",
+            "Servo",
+            "servoOn",
+            "ServoOn",
+        )
+        true_values = {"1", "true", "on", "enabled", "poweron", "servoon"}
+        false_values = {"0", "false", "off", "disabled", "poweroff", "servooff"}
+
+        def _coerce_value(value: Any) -> Optional[bool]:
+            if isinstance(value, bool):
+                return value
             if isinstance(value, (int, float)):
                 return bool(value)
             if isinstance(value, str):
-                return value.lower() in {"1", "true", "on", "enabled"}
-        return None
+                lowered = value.strip().lower()
+                if lowered in true_values:
+                    return True
+                if lowered in false_values:
+                    return False
+                return None
+            if isinstance(value, dict):
+                if "value" in value:
+                    return _coerce_value(value.get("value"))
+            return None
+
+        def _search_payload(payload: Dict[str, Any]) -> Optional[bool]:
+            for key in power_keys:
+                if key in payload:
+                    coerced = _coerce_value(payload.get(key))
+                    if coerced is not None:
+                        return coerced
+            for key, value in payload.items():
+                if isinstance(key, str):
+                    lowered = key.lower()
+                    if "power" in lowered or "servo" in lowered:
+                        coerced = _coerce_value(value)
+                        if coerced is not None:
+                            return coerced
+                if isinstance(value, dict):
+                    coerced = _search_payload(value)
+                    if coerced is not None:
+                        return coerced
+            return None
+
+        return _search_payload(status)
 
     def coordinate_frame_snapshot(self) -> Dict[str, Any]:
         with self._coordinate_lock:
