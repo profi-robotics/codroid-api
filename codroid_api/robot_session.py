@@ -191,7 +191,8 @@ class RobotSession:
             "ServoOn",
         )
         true_values = {"1", "true", "on", "enabled", "poweron", "servoon"}
-        false_values = {"0", "false", "off", "disabled", "poweroff", "servooff"}
+        false_values = {"0", "false", "off",
+                        "disabled", "poweroff", "servooff"}
 
         def _coerce_value(value: Any) -> Optional[bool]:
             if isinstance(value, bool):
@@ -422,8 +423,8 @@ class RobotSession:
         await self._ensure_user_connection_on_loop(settings)
 
         if self.robot_api is not None and self.robot_uri == resolved_uri:
-            LOGGER.debug(
-                "Reusing existing robot connection to %s", resolved_uri)
+            # LOGGER.debug(
+            #     "Reusing existing robot connection to %s", resolved_uri)
             await self._ensure_robot_monitor(self.robot_api)
             return self.robot_api
 
@@ -505,7 +506,8 @@ class RobotSession:
                                 timestamp=time.time(),
                             )
                     if action == "RobotStatus":
-                        status_payload = (msg.get("data") or {}).get("data") or {}
+                        status_payload = (
+                            msg.get("data") or {}).get("data") or {}
                         status = status_payload.get("data") or status_payload
                         if isinstance(status, dict):
                             with self._status_lock:
