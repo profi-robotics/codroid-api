@@ -21,6 +21,7 @@ from codroid_api.commands import (
     RobotTargetPosType,
 )
 
+
 @dataclass
 class CodroidConfig:
     """Runtime config for a Codroid websocket connection."""
@@ -52,8 +53,10 @@ class CodroidConfig:
     commands: RobotCommandSet = field(default_factory=RobotCommandSet)
     control_paths: RobotControlPaths = field(default_factory=RobotControlPaths)
     jog_modes: RobotJogMode = field(default_factory=RobotJogMode)
-    jog_references: RobotJogReference = field(default_factory=RobotJogReference)
-    target_pos_types: RobotTargetPosType = field(default_factory=RobotTargetPosType)
+    jog_references: RobotJogReference = field(
+        default_factory=RobotJogReference)
+    target_pos_types: RobotTargetPosType = field(
+        default_factory=RobotTargetPosType)
 
     @property
     def ws_url(self) -> str:
@@ -190,7 +193,8 @@ class CodroidAPI:
         resolved_usercode = usercode or self.config.usercode
         if not resolved_usercode:
             raise ValueError("Usercode is required; set CODROID_USERCODE.")
-        resolved_userwsid = userwsid or self.config.userwsid or self._make_ws_user_id("ws")
+        resolved_userwsid = userwsid or self.config.userwsid or self._make_ws_user_id(
+            "ws")
         payload = self.build_message(
             message_type="user",
             action="wslogin",
@@ -244,7 +248,8 @@ class CodroidAPI:
         login_payload = {
             "code": pub,
             "data": self._asencode(
-                json.dumps({"username": resolved_username, "userpass": resolved_password}),
+                json.dumps({"username": resolved_username,
+                           "userpass": resolved_password}),
                 pri,
             ),
         }
@@ -280,15 +285,18 @@ class CodroidAPI:
         await self.send_message(payload)
 
     async def read_config(self) -> None:
-        payload = self.build_message(message_type="System", action="ReadConfig", data="")
+        payload = self.build_message(
+            message_type="System", action="ReadConfig", data="")
         await self.send_message(payload)
 
     async def read_system_data(self) -> None:
-        payload = self.build_message(message_type="projmanager", action="readsystemdata", data="")
+        payload = self.build_message(
+            message_type="projmanager", action="readsystemdata", data="")
         await self.send_message(payload)
 
     async def read_global_data(self) -> None:
-        payload = self.build_message(message_type="projmanager", action="readglobaldata", data="")
+        payload = self.build_message(
+            message_type="projmanager", action="readglobaldata", data="")
         await self.send_message(payload)
 
     async def set_params(self, params: Iterable[Dict[str, Any]]) -> None:
@@ -334,6 +342,154 @@ class CodroidAPI:
     async def set_auto_mode(self) -> None:
         """Switch to automatic mode (command code)."""
         await self.set_robot_command(self.config.commands.auto_mode)
+
+    async def detect_emergency_stop(self, message: Dict[str, Any]) -> bool:
+        """Detect if message indicates emergency stop condition."""
+        # Emergency stop is typically indicated by status/alarm fields in robot messages
+        # Look for emergency stop indicators in various message formats
+        data = message.get("data", {})
+
+        # Check for emergency stop in robot status
+        if isinstance(data, dict):
+            # Check robot status fields commonly used for emergency conditions
+            robot_status = data.get("robot_status", {})
+            if isinstance(robot_status, dict):
+                if robot_status.get("emergency_stop") or robot_status.get("estop"):
+                    return True
+
+            # Check alarm/error fields
+            alarms = data.get("alarms", [])
+            if isinstance(alarms, list):
+                for alarm in alarms:
+                    if isinstance(alarm, dict) and "emergency" in str(alarm).lower():
+                        return True
+
+            # Check for emergency indicators in status messages
+            if "emergency" in str(data).lower() and "stop" in str(data).lower():
+                return True
+
+        return False
+
+    async def detect_overspeed(self, message: Dict[str, Any]) -> bool:
+        """Detect if message indicates overspeed condition."""
+        # Overspeed is typically indicated by status/alarm fields in robot messages
+        data = message.get("data", {})
+
+        # Check for overspeed in robot status
+        if isinstance(data, dict):
+            # Check robot status fields commonly used for overspeed conditions
+            robot_status = data.get("robot_status", {})
+            if isinstance(robot_status, dict):
+                if robot_status.get("overspeed") or robot_status.get("speed_alarm"):
+                    return True
+
+            # Check alarm/error fields
+            alarms = data.get("alarms", [])
+            if isinstance(alarms, list):
+                for alarm in alarms:
+                    if isinstance(alarm, dict) and "overspeed" in str(alarm).lower():
+                        return True
+
+            # Check for overspeed indicators in status messages
+            if "overspeed" in str(data).lower() or "speed" in str(data).lower():
+                return True
+
+        return False
+
+    async def clear_emergency_stop(self) -> None:
+        """Clear emergency stop condition by following the standard recovery sequence."""
+        # Based on HAR analysis: stop -> power cycle -> restore auto mode
+        await self.stop_command()
+        await asyncio.sleep(0.1)  # Brief pause between commands
+        await self.power_off()
+        await asyncio.sleep(0.5)  # Allow power off to complete
+        await self.power_on()
+        await asyncio.sleep(0.5)  # Allow power on to complete
+        await self.set_auto_mode()
+
+    async def clear_overspeed(self) -> None:
+        """Clear overspeed condition by following the standard recovery sequence."""
+        # Based on HAR analysis: stop -> power cycle -> restore auto mode
+        await self.stop_command()
+        await asyncio.sleep(0.1)  # Brief pause between commands
+        await self.power_off()
+        await asyncio.sleep(0.5)  # Allow power off to complete
+        await self.power_on()
+        await asyncio.sleep(0.5)  # Allow power on to complete
+        await self.set_auto_mode()
+
+    async def monitor_robot_errors(self) -> AsyncIterator[Dict[str, Any]]:
+        """Monitor incoming messages for emergency stop or overspeed conditions.
+
+        Yields:
+            Dict with keys: error_type (str), detected (bool), message (dict), timestamp (int)
+        """
+        async for message in self.listen():
+            timestamp = self._now_ms()
+
+            # Check for emergency stop
+            if await self.detect_emergency_stop(message):
+                yield {
+                    "error_type": "emergency_stop",
+                    "detected": True,
+                    "message": message,
+                    "timestamp": timestamp,
+                }
+
+            # Check for overspeed
+            if await self.detect_overspeed(message):
+                yield {
+                    "error_type": "overspeed",
+                    "detected": True,
+                    "message": message,
+                    "timestamp": timestamp,
+                }
+
+    async def auto_recover_from_errors(
+        self,
+        monitor_duration: Optional[float] = None,
+        auto_clear: bool = True,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Monitor for errors and optionally auto-clear them.
+
+        Args:
+            monitor_duration: How long to monitor in seconds. If None, monitors indefinitely.
+            auto_clear: Whether to automatically clear detected errors.
+
+        Yields:
+            Dict with error info and recovery status.
+        """
+        start_time = time.monotonic()
+
+        async for error_event in self.monitor_robot_errors():
+            # Check if monitoring duration has elapsed
+            if monitor_duration is not None:
+                elapsed = time.monotonic() - start_time
+                if elapsed > monitor_duration:
+                    break
+
+            error_type = error_event["error_type"]
+
+            if auto_clear:
+                try:
+                    if error_type == "emergency_stop":
+                        await self.clear_emergency_stop()
+                        recovery_status = "cleared"
+                    elif error_type == "overspeed":
+                        await self.clear_overspeed()
+                        recovery_status = "cleared"
+                    else:
+                        recovery_status = "unknown_error_type"
+                except Exception as e:
+                    recovery_status = f"clear_failed: {e}"
+            else:
+                recovery_status = "detected_only"
+
+            yield {
+                **error_event,
+                "recovery_status": recovery_status,
+                "auto_clear_enabled": auto_clear,
+            }
 
     async def set_manual_move_rate(self, rate: float) -> None:
         """Set the manual movement rate (0.0 - 1.0) via setparam."""
@@ -526,7 +682,8 @@ class CodroidAPI:
     ) -> None:
         """Move the robot to the origin of a user coordinate frame."""
         origin = self.build_target_cpos(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        origin = self.attach_coordinate_to_cpos(origin, coordinate_id=coordinate_id)
+        origin = self.attach_coordinate_to_cpos(
+            origin, coordinate_id=coordinate_id)
 
         # Select the coordinate slot so downstream publishes reflect the correct frame.
         await self.set_current_coordinate_id(coordinate_id)
@@ -717,11 +874,13 @@ class CodroidAPI:
         payload_points: List[Dict[str, Any]] = []
         for point in points:
             payload_points.append(
-                self.attach_coordinate_to_cpos(point, coordinate_id=coordinate_id)
+                self.attach_coordinate_to_cpos(
+                    point, coordinate_id=coordinate_id)
             )
 
         if len(payload_points) != 3:
-            raise ValueError("Coordinate calibration requires exactly three points.")
+            raise ValueError(
+                "Coordinate calibration requires exactly three points.")
 
         if set_active_coordinate:
             await self.set_current_coordinate_id(coordinate_id)
@@ -807,7 +966,8 @@ class CodroidAPI:
 
     async def get_record_flag(self) -> None:
         """Query the current trajectory record flag."""
-        payload = self.build_message(message_type="trajectory", action="getRecordFlag", data="")
+        payload = self.build_message(
+            message_type="trajectory", action="getRecordFlag", data="")
         await self.send_message(payload)
 
     async def set_record_flag(self, enabled: bool) -> None:
@@ -835,7 +995,8 @@ class CodroidAPI:
 
     async def get_log_file_list(self) -> None:
         """Request log file metadata."""
-        payload = self.build_message(message_type="common", action="getLogFileList", data={})
+        payload = self.build_message(
+            message_type="common", action="getLogFileList", data={})
         await self.send_message(payload)
 
     @staticmethod
@@ -925,7 +1086,8 @@ class CodroidAPI:
         return di_states
 
     async def get_io_info(self) -> None:
-        payload = self.build_message(message_type="IOManager", action="GetIOInfo", data="")
+        payload = self.build_message(
+            message_type="IOManager", action="GetIOInfo", data="")
         await self.send_message(payload)
 
     async def watch_di_changes(
@@ -1050,11 +1212,13 @@ class CodroidAPI:
         resolved_task = task or self.config.default_task
         resolved_label = label or self.config.default_label
         if not resolved_proj:
-            raise ValueError("Project id is required; set CODROID_DEFAULT_PROJECT.")
+            raise ValueError(
+                "Project id is required; set CODROID_DEFAULT_PROJECT.")
         if not resolved_task:
             raise ValueError("Task id is required; set CODROID_DEFAULT_TASK.")
         if not resolved_label:
-            raise ValueError("Label id is required; set CODROID_DEFAULT_LABEL.")
+            raise ValueError(
+                "Label id is required; set CODROID_DEFAULT_LABEL.")
         payload = self.build_message(
             message_type="projexecute",
             action="run",
@@ -1070,7 +1234,8 @@ class CodroidAPI:
         await self.send_message(payload)
 
     async def stop_project(self) -> None:
-        payload = self.build_message(message_type="projexecute", action="stop", data={})
+        payload = self.build_message(
+            message_type="projexecute", action="stop", data={})
         await self.send_message(payload)
 
     async def _move_to_preset(self, command: int, hold_seconds: float) -> None:
@@ -1118,7 +1283,8 @@ class CodroidAPI:
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        request = urllib.request.Request(
+            url, data=data, headers=headers, method=method)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             text = response.read().decode("utf-8", "replace")
         if not text:
@@ -1210,7 +1376,8 @@ class CodroidAPI:
         resp = await self._http_json(f"/robot/project/read?id={project_id}", method="GET")
         data = resp.get("data") or []
         if not data or "content" not in data[0]:
-            raise RuntimeError(f"No project content returned for {project_id}.")
+            raise RuntimeError(
+                f"No project content returned for {project_id}.")
         content = data[0]["content"]
         return json.loads(content)
 
@@ -1258,7 +1425,8 @@ class CodroidAPI:
     ) -> Dict[str, Any]:
         """Remove a point (by id or label) and save the project."""
         if not point_id and not label:
-            raise ValueError("point_id or label is required to delete a point.")
+            raise ValueError(
+                "point_id or label is required to delete a point.")
         project = await self.read_project(project_id)
         points_list = self._get_points_list(project)
         remaining = []
@@ -1278,7 +1446,8 @@ class CodroidAPI:
         """Delete a project via the HTTP endpoint (/robot/project/del?id=...)."""
 
         def _delete_sync() -> Dict[str, Any]:
-            url = urljoin(self._http_base_url() + "/", f"robot/project/del?id={project_id}")
+            url = urljoin(self._http_base_url() + "/",
+                          f"robot/project/del?id={project_id}")
             req = urllib.request.Request(url)
             try:
                 with urllib.request.urlopen(req, timeout=5.0) as resp:

@@ -1,0 +1,256 @@
+# Emergency Stop and Overspeed Handling
+
+This document describes the emergency stop and overspeed detection and clearing functionality added to CodroidAPI based on HAR file analysis.
+
+## Overview
+
+The CodroidAPI now provides comprehensive emergency handling capabilities:
+
+1. **Detection**: Automatically detect emergency stop and overspeed conditions from incoming websocket messages
+2. **Clearing**: Execute the proper recovery sequence to clear error conditions
+3. **Monitoring**: Continuously monitor for error conditions with optional auto-recovery
+4. **Integration**: Easy integration into production workflows
+
+## Implementation Details
+
+Based on the analysis of `overspeed-and-emergency-stop.har`, the following patterns were identified:
+
+### Message Format
+Robot status messages use websocket communication with JSON format:
+```json
+{
+  "id": "ws...",
+  "time": 1234567890,
+  "token": "user:admin", 
+  "type": "common",
+  "action": "setparam",
+  "data": [{"path": "Robot/Control/command", "value": <command_code>}]
+}
+```
+
+### Command Codes
+- `0` = stop command
+- `1` = power_on
+- `2` = power_off
+- `3` = manual_mode
+- `5` = auto_mode
+
+### Recovery Sequence
+The standard recovery sequence observed in the HAR file:
+1. Stop command (`0`)
+2. Power off (`2`) 
+3. Power on (`1`)
+4. Restore auto mode (`5`)
+
+## API Reference
+
+### Detection Methods
+
+#### `detect_emergency_stop(message: Dict[str, Any]) -> bool`
+Detects emergency stop conditions in websocket messages.
+
+```python
+async def example_detection():
+    async for message in client.listen():
+        if await client.detect_emergency_stop(message):
+            print("Emergency stop detected!")
+            break
+```
+
+#### `detect_overspeed(message: Dict[str, Any]) -> bool`
+Detects overspeed conditions in websocket messages.
+
+```python
+is_overspeed = await client.detect_overspeed(message)
+```
+
+### Clearing Methods
+
+#### `clear_emergency_stop() -> None`
+Executes the recovery sequence to clear emergency stop condition.
+
+```python
+await client.clear_emergency_stop()
+```
+
+#### `clear_overspeed() -> None` 
+Executes the recovery sequence to clear overspeed condition.
+
+```python
+await client.clear_overspeed()
+```
+
+### Monitoring Methods
+
+#### `monitor_robot_errors() -> AsyncIterator[Dict[str, Any]]`
+Continuously monitors for error conditions.
+
+```python
+async for error_event in client.monitor_robot_errors():
+    error_type = error_event["error_type"]  # "emergency_stop" or "overspeed"
+    timestamp = error_event["timestamp"]
+    message = error_event["message"]
+    print(f"Error detected: {error_type} at {timestamp}")
+```
+
+#### `auto_recover_from_errors(monitor_duration=None, auto_clear=True) -> AsyncIterator[Dict[str, Any]]`
+Monitors for errors with optional automatic recovery.
+
+```python
+# Monitor with auto-recovery for 60 seconds
+async for event in client.auto_recover_from_errors(
+    monitor_duration=60.0,
+    auto_clear=True
+):
+    print(f"Error {event['error_type']}: {event['recovery_status']}")
+```
+
+## Usage Examples
+
+### Basic Error Detection and Clearing
+
+```python
+import asyncio
+from codroid_api.client import CodroidAPI, CodroidConfig
+
+async def basic_example():
+    config = CodroidConfig(host="192.168.101.100")
+    
+    async with CodroidAPI(config) as client:
+        await client.ws_login_with_password()
+        await client.robot_login()
+        
+        # Monitor for errors
+        async for message in client.listen():
+            if await client.detect_emergency_stop(message):
+                print("Emergency stop detected - clearing...")
+                await client.clear_emergency_stop()
+                break
+            
+            if await client.detect_overspeed(message):
+                print("Overspeed detected - clearing...")
+                await client.clear_overspeed()
+                break
+
+asyncio.run(basic_example())
+```
+
+### Automated Error Recovery
+
+```python
+async def automated_recovery():
+    config = CodroidConfig(host="192.168.101.100")
+    
+    async with CodroidAPI(config) as client:
+        await client.ws_login_with_password()
+        await client.robot_login()
+        
+        # Auto-recover from errors indefinitely
+        async for event in client.auto_recover_from_errors(auto_clear=True):
+            if event["recovery_status"] == "cleared":
+                print(f"✅ Auto-recovered from {event['error_type']}")
+            else:
+                print(f"❌ Recovery failed: {event['recovery_status']}")
+
+asyncio.run(automated_recovery())
+```
+
+### Production Workflow Integration
+
+```python
+async def production_workflow():
+    config = CodroidConfig(host="192.168.101.100")
+    
+    async with CodroidAPI(config) as client:
+        await client.ws_login_with_password()
+        await client.robot_login()
+        
+        # Start error monitoring in background
+        error_task = asyncio.create_task(background_error_monitor(client))
+        
+        try:
+            # Your production code here
+            await client.power_on()
+            await client.set_auto_mode()
+            await client.move_safe(hold_seconds=2.0)
+            # ... more robot operations
+            
+        finally:
+            error_task.cancel()
+
+async def background_error_monitor(client):
+    async for event in client.auto_recover_from_errors(auto_clear=True):
+        logging.warning(f"Error auto-recovery: {event}")
+
+asyncio.run(production_workflow())
+```
+
+## Testing
+
+Run the test suite to verify functionality:
+
+```bash
+cd /path/to/codroid-api
+python examples/test_emergency_handling.py
+```
+
+For comprehensive examples:
+
+```bash
+python examples/emergency_handling.py
+```
+
+## Error Detection Patterns
+
+The detection methods look for various patterns in websocket messages:
+
+### Emergency Stop Patterns
+- `robot_status.emergency_stop = True`
+- `robot_status.estop = True` 
+- `alarms` array containing emergency indicators
+- String content containing "emergency" and "stop"
+
+### Overspeed Patterns
+- `robot_status.overspeed = True`
+- `robot_status.speed_alarm = True`
+- `alarms` array containing overspeed indicators
+- String content containing "overspeed" or "speed"
+
+## Configuration
+
+The recovery sequences use configurable timing:
+- `0.1s` delay between stop and power off
+- `0.5s` delay after power off/on operations
+
+These can be customized by modifying the `clear_emergency_stop()` and `clear_overspeed()` methods.
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Detection not working**: Verify message format matches expected patterns
+2. **Recovery failing**: Check robot permissions and connection status
+3. **Timeout errors**: Increase delay timing in recovery sequences
+
+### Debugging
+
+Enable debug logging to see message contents:
+
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Monitor message structure
+async for message in client.listen():
+    print(f"Message: {message}")
+    # Check detection results
+```
+
+## Contributing
+
+When adding new error patterns:
+
+1. Update the detection methods in `client.py`
+2. Add test cases in `examples/test_emergency_handling.py`
+3. Update this documentation
+4. Run the test suite to verify compatibility
