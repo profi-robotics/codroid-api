@@ -57,6 +57,8 @@ class RobotSession:
         self._status_lock = threading.Lock()
         self._coordinate_lock = threading.Lock()
         self._calibration_lock = threading.Lock()
+        self._warning_lock = threading.Lock()
+        self._error_lock = threading.Lock()
         self._position = RobotPosture()
         self._posture_seen = False
         self._last_press_timestamp: Optional[float] = None
@@ -68,6 +70,11 @@ class RobotSession:
         self._robot_coordinate_timestamp: Optional[float] = None
         self._robot_calibration_frame: Dict[str, Any] = {}
         self._robot_calibration_timestamp: Optional[float] = None
+        self._robot_warning: Dict[str, Any] = {}
+        self._robot_warning_timestamp: Optional[float] = None
+        self._robot_error: Dict[str, Any] = {}
+        self._robot_error_timestamp: Optional[float] = None
+        self._emergency_button_active = False
 
         self.user_api: Optional[CodroidAPI] = None
         self.user_uri: Optional[str] = None
@@ -138,6 +145,13 @@ class RobotSession:
         with self._coordinate_lock:
             self._robot_coordinate = {}
             self._robot_coordinate_timestamp = None
+        with self._warning_lock:
+            self._robot_warning = {}
+            self._robot_warning_timestamp = None
+            self._emergency_button_active = False
+        with self._error_lock:
+            self._robot_error = {}
+            self._robot_error_timestamp = None
         with self._calibration_lock:
             self._robot_calibration_frame = {}
             self._robot_calibration_timestamp = None
@@ -176,6 +190,30 @@ class RobotSession:
             if self._robot_status_timestamp is None:
                 return None
             return time.time() - self._robot_status_timestamp
+
+    def robot_warning_snapshot(self) -> Dict[str, Any]:
+        with self._warning_lock:
+            return dict(self._robot_warning)
+
+    def robot_warning_age_seconds(self) -> Optional[float]:
+        with self._warning_lock:
+            if self._robot_warning_timestamp is None:
+                return None
+            return time.time() - self._robot_warning_timestamp
+
+    def robot_error_snapshot(self) -> Dict[str, Any]:
+        with self._error_lock:
+            return dict(self._robot_error)
+
+    def robot_error_age_seconds(self) -> Optional[float]:
+        with self._error_lock:
+            if self._robot_error_timestamp is None:
+                return None
+            return time.time() - self._robot_error_timestamp
+
+    def emergency_button_active(self) -> bool:
+        with self._warning_lock:
+            return bool(self._emergency_button_active)
 
     def robot_power_on(self) -> Optional[bool]:
         status = self.robot_status_snapshot()
@@ -513,6 +551,21 @@ class RobotSession:
                             with self._status_lock:
                                 self._robot_status = dict(status)
                                 self._robot_status_timestamp = time.time()
+                    if action == "RobotWarning":
+                        with self._warning_lock:
+                            self._robot_warning = dict(msg)
+                            self._robot_warning_timestamp = time.time()
+                            if CodroidAPI.is_emergency_button_warning(msg):
+                                self._emergency_button_active = True
+                            elif (
+                                self._emergency_button_active
+                                and CodroidAPI.is_robot_warning_cleared(msg)
+                            ):
+                                self._emergency_button_active = False
+                    if action == "RobotError":
+                        with self._error_lock:
+                            self._robot_error = dict(msg)
+                            self._robot_error_timestamp = time.time()
                     if action == "RobotCoordinate":
                         data = (msg.get("data") or {}).get("data") or {}
                         frame = data.get("user") or data

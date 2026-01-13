@@ -81,11 +81,13 @@ class CodroidAPI:
     JOINT_PROTECTION_WARNING_CODE = 269485321
     _JOINT_PROTECTION_WARNING_KEYWORDS = ("joint", "collision")
 
-    OVERSPEED_WARNING_CODE = 269485334
-    _OVERSPEED_WARNING_KEYWORDS = ("overspeed", "speed")
-
-    JOINT_PROTECTION_WARNING_CODE = 269485321
-    _JOINT_PROTECTION_WARNING_KEYWORDS = ("joint", "collision")
+    DRAG_NOT_ALLOWED_WARNING_CODE = 269485573
+    _DRAG_NOT_ALLOWED_WARNING_KEYWORDS = (
+        "drag not allowed",
+        "external force",
+        "payload",
+        "tool setting",
+    )
 
     def __init__(self, config: Optional[CodroidConfig] = None) -> None:
         self.config = config or CodroidConfig()
@@ -464,6 +466,22 @@ class CodroidAPI:
 
         return False
 
+    async def detect_drag_not_allowed(self, message: Dict[str, Any]) -> bool:
+        """Detect drag-not-allowed warnings from the controller."""
+        if self._message_contains_warning(
+            message,
+            codes=(self.DRAG_NOT_ALLOWED_WARNING_CODE,),
+            keywords=self._DRAG_NOT_ALLOWED_WARNING_KEYWORDS,
+        ):
+            return True
+
+        data = message.get("data", {})
+        if isinstance(data, dict):
+            if "drag not allowed" in str(data).lower():
+                return True
+
+        return False
+
     async def detect_wrong_tool_error(self, message: Dict[str, Any]) -> bool:
         """Detect wrong payload/tool errors reported via RobotError."""
         return self.is_wrong_tool_error(message)
@@ -572,6 +590,16 @@ class CodroidAPI:
         )
 
     @classmethod
+    def is_drag_not_allowed_warning(cls, message: Dict[str, Any]) -> bool:
+        if message.get("action") != "RobotWarning":
+            return False
+        return cls._message_contains_warning(
+            message,
+            codes=(cls.DRAG_NOT_ALLOWED_WARNING_CODE,),
+            keywords=cls._DRAG_NOT_ALLOWED_WARNING_KEYWORDS,
+        )
+
+    @classmethod
     def is_robot_warning_cleared(cls, message: Dict[str, Any]) -> bool:
         if message.get("action") != "RobotWarning":
             return False
@@ -601,6 +629,33 @@ class CodroidAPI:
                 emergency_active = False
                 yield {
                     "event": "released",
+                    "timestamp": timestamp,
+                    "message": message,
+                }
+
+    async def watch_drag_not_allowed(self) -> AsyncIterator[Dict[str, Any]]:
+        """Yield drag-not-allowed events based on RobotWarning updates."""
+        drag_active = False
+        async for message in self.listen():
+            if message.get("action") != "RobotWarning":
+                continue
+
+            timestamp = message.get("time") or self._now_ms()
+
+            if self.is_drag_not_allowed_warning(message):
+                if not drag_active:
+                    drag_active = True
+                    yield {
+                        "event": "detected",
+                        "timestamp": timestamp,
+                        "message": message,
+                    }
+                continue
+
+            if drag_active and self.is_robot_warning_cleared(message):
+                drag_active = False
+                yield {
+                    "event": "cleared",
                     "timestamp": timestamp,
                     "message": message,
                 }
@@ -667,6 +722,10 @@ class CodroidAPI:
         """Clear wrong tool/payload errors using the shared recovery sequence."""
         await self._run_error_recovery_sequence()
 
+    async def clear_drag_not_allowed(self) -> None:
+        """Clear the drag-not-allowed warning by using the UI clear command."""
+        await self.clear_robot_error()
+
     async def enter_rescue_mode(self) -> None:
         """Trigger the Rescue mode command (Robot/Control/command = 4)."""
         await self._ensure_powered_off()
@@ -718,6 +777,15 @@ class CodroidAPI:
                     "timestamp": timestamp,
                 }
 
+            # Check for drag-not-allowed warnings
+            if await self.detect_drag_not_allowed(message):
+                yield {
+                    "error_type": "drag_not_allowed",
+                    "detected": True,
+                    "message": message,
+                    "timestamp": timestamp,
+                }
+
             # Check for wrong tool/payload errors
             if await self.detect_wrong_tool_error(message):
                 yield {
@@ -762,6 +830,9 @@ class CodroidAPI:
                         recovery_status = "cleared"
                     elif error_type == "joint_protection":
                         await self.clear_joint_protection()
+                        recovery_status = "cleared"
+                    elif error_type == "drag_not_allowed":
+                        await self.clear_drag_not_allowed()
                         recovery_status = "cleared"
                     elif error_type == "wrong_tool":
                         await self.clear_tool_error()

@@ -81,6 +81,24 @@ SAMPLE_JOINT_PROTECTION_MESSAGE = {
     },
 }
 
+SAMPLE_DRAG_MESSAGE = {
+    "id": 0,
+    "type": "publish",
+    "code": 200,
+    "msg": "",
+    "action": "RobotWarning",
+    "data": {
+        "code": 0,
+        "msg": "",
+        "data": [
+            {
+                "errorCode": 269485573,
+                "info": "Drag not allowed, please remove external force or check payload & tool settings"
+            }
+        ]
+    }
+}
+
 
 async def test_error_detection():
     """Test the error detection methods without network connection."""
@@ -105,6 +123,9 @@ async def test_error_detection():
     # Test wrong tool/payload detection
     is_tool_error = await client.detect_wrong_tool_error(SAMPLE_TOOL_ERROR_MESSAGE)
     print(f"Tool/payload error detection: {'✅ PASS' if is_tool_error else '❌ FAIL'}")
+
+    is_drag = await client.detect_drag_not_allowed(SAMPLE_DRAG_MESSAGE)
+    print(f"Drag-not-allowed detection: {'✅ PASS' if is_drag else '❌ FAIL'}")
 
     # Test normal message (should not detect errors)
     is_emergency_normal = await client.detect_emergency_stop(SAMPLE_NORMAL_MESSAGE)
@@ -158,6 +179,13 @@ async def test_command_methods():
         print("  ✅ Tool/payload clearing sequence completed")
     except Exception as e:
         print(f"  ❌ Tool/payload clearing failed: {e}")
+
+    print("Testing drag-not-allowed clearing sequence:")
+    try:
+        await client.clear_drag_not_allowed()
+        print("  ✅ Drag-not-allowed clearing sequence completed")
+    except Exception as e:
+        print(f"  ❌ Drag-not-allowed clearing failed: {e}")
 
 
 async def test_message_structure():

@@ -80,6 +80,15 @@ if await client.detect_wrong_tool_error(message):
     print("Tool/payload mismatch detected!")
 ```
 
+#### `detect_drag_not_allowed(message: Dict[str, Any]) -> bool`
+Detects the drag-not-allowed warning (`errorCode = 269485573`) that the UI raises when
+external forces or payload/tool settings prevent motion.
+
+```python
+if await client.detect_drag_not_allowed(message):
+    print("Drag not allowed warning raised!")
+```
+
 ### Clearing Methods
 
 #### `clear_emergency_stop() -> None`
@@ -110,6 +119,14 @@ Runs the recovery flow whenever the wrong tool/payload error is detected.
 await client.clear_tool_error()
 ```
 
+#### `clear_drag_not_allowed() -> None`
+Issues the UI clear error command (`Robot/Control/command = 501`) to acknowledge a
+drag-not-allowed warning once any external force is removed.
+
+```python
+await client.clear_drag_not_allowed()
+```
+
 ### Rescue Controls
 
 #### `enter_rescue_mode() -> None`
@@ -133,7 +150,7 @@ Continuously monitors for emergency, overspeed, joint protection, or wrong-tool 
 
 ```python
 async for error_event in client.monitor_robot_errors():
-    error_type = error_event["error_type"]  # "emergency_stop", "overspeed", "joint_protection", or "wrong_tool"
+    error_type = error_event["error_type"]  # "emergency_stop", "overspeed", "joint_protection", "drag_not_allowed", or "wrong_tool"
     print(f"Error detected: {error_type} at {error_event['timestamp']}")
 ```
 
@@ -143,6 +160,14 @@ Yields rescue mode transitions whenever `RobotStatus.state` flips into/out of st
 ```python
 async for event in client.watch_rescue_mode():
     print(f"Rescue mode {event['event']} at {event['timestamp']}")
+```
+
+#### `watch_drag_not_allowed() -> AsyncIterator[Dict[str, Any]]`
+Tracks drag-not-allowed warning events so your tooling can react when motion is blocked.
+
+```python
+async for event in client.watch_drag_not_allowed():
+    print(f"Drag warning {event['event']} at {event['timestamp']}")
 ```
 
 #### `auto_recover_from_errors(monitor_duration=None, auto_clear=True) -> AsyncIterator[Dict[str, Any]]`
@@ -262,8 +287,21 @@ Helper scripts under `examples/` mirror the HAR captures for fast verification:
 - `examples/test_emergency_button.py` watches the emergency button flow from `emergency-button.har`.
 - `examples/test_overspeed_joint_protection.py` monitors overspeed and joint protection warnings from `overspeed-and-joint-protection.har`.
 - `examples/test_rescue_mode.py` reports wrong tool/payload errors and exposes the Rescue commands captured in `rescue.har` (`enter_rescue_mode`, `exit_rescue_mode`, `clear_tool_error`) plus an `on` command that powers the robot on.
+- `examples/test_auto_mode_loop.py` exercises the automatic movement between candle and safe presets at 100% manual move rate so you can verify the auto workflow end-to-end.
 
 Run them against a live connection when reproducing the recorded faults.
+
+## Auto Mode Notes (Manual Motion)
+
+Analysis of `auto.har` shows that the UI does not send manual move commands while in
+auto mode. Instead, it switches to project execution and drives program steps:
+
+- `projexecute.run` with `mode=2` (auto mode)
+- Repeated `common.setparam` calls to `Instruction/Project/projectStepSignal = true`
+
+This means manual motion is effectively blocked in auto mode by design. If you need
+movement while the robot is in auto mode, run a project and advance it with the
+project step signal rather than sending manual move commands.
 
 ## Error Detection Patterns
 
@@ -284,6 +322,10 @@ The detection methods look for various patterns in websocket messages:
 ### Wrong Tool / Rescue Patterns
 - `RobotError` entries with `errorCode = 269485337` and info mentioning payload/tool settings
 - Rescue mode is represented by `RobotStatus.state == 3` and returns to `1` when canceled
+
+### Drag Not Allowed Patterns
+- `RobotWarning` entries with `errorCode = 269485573`
+- Info text such as "Drag not allowed" or mentions of external force/payload tooling
 
 ## Configuration
 
