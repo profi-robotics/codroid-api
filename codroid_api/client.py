@@ -72,6 +72,12 @@ class CodroidAPI:
         "emergency stop button",
     )
 
+    OVERSPEED_WARNING_CODE = 269485334
+    _OVERSPEED_WARNING_KEYWORDS = ("overspeed", "speed")
+
+    JOINT_PROTECTION_WARNING_CODE = 269485321
+    _JOINT_PROTECTION_WARNING_KEYWORDS = ("joint", "collision")
+
     def __init__(self, config: Optional[CodroidConfig] = None) -> None:
         self.config = config or CodroidConfig()
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -376,6 +382,13 @@ class CodroidAPI:
             if "emergency" in str(data).lower() and "stop" in str(data).lower():
                 return True
 
+        if self._message_contains_warning(
+            message,
+            codes=(self.EMERGENCY_WARNING_CODE,),
+            keywords=self._EMERGENCY_WARNING_KEYWORDS,
+        ):
+            return True
+
         return False
 
     async def detect_overspeed(self, message: Dict[str, Any]) -> bool:
@@ -402,6 +415,41 @@ class CodroidAPI:
             if "overspeed" in str(data).lower() or "speed" in str(data).lower():
                 return True
 
+        if self._message_contains_warning(
+            message,
+            codes=(self.OVERSPEED_WARNING_CODE,),
+            keywords=self._OVERSPEED_WARNING_KEYWORDS,
+        ):
+            return True
+
+        return False
+
+    async def detect_joint_protection(self, message: Dict[str, Any]) -> bool:
+        """Detect if message indicates joint protection (collision) condition."""
+        if self._message_contains_warning(
+            message,
+            codes=(self.JOINT_PROTECTION_WARNING_CODE,),
+            keywords=self._JOINT_PROTECTION_WARNING_KEYWORDS,
+        ):
+            return True
+
+        data = message.get("data", {})
+        if isinstance(data, dict):
+            robot_status = data.get("robot_status", {})
+            if isinstance(robot_status, dict):
+                # Check for any joint protection flags if available
+                if robot_status.get("joint_protection") or robot_status.get("joint_collision"):
+                    return True
+
+            alarms = data.get("alarms", [])
+            if isinstance(alarms, list):
+                for alarm in alarms:
+                    if isinstance(alarm, dict) and "joint" in str(alarm).lower():
+                        return True
+
+            if "joint" in str(data).lower() or "collision" in str(data).lower():
+                return True
+
         return False
 
     @staticmethod
@@ -414,17 +462,47 @@ class CodroidAPI:
         return []
 
     @classmethod
-    def _matches_emergency_warning_entry(cls, entry: Any) -> bool:
+    def _warning_matches_entry(
+        cls,
+        entry: Any,
+        *,
+        codes: Optional[Iterable[int]] = None,
+        keywords: Iterable[str] = (),
+    ) -> bool:
         if not isinstance(entry, dict):
             return False
-        if entry.get("errorCode") == cls.EMERGENCY_WARNING_CODE:
-            return True
+        if codes:
+            entry_code = entry.get("errorCode")
+            if entry_code in codes:
+                return True
         info = entry.get("info") or entry.get("message") or entry.get("msg")
         if isinstance(info, str):
             lowered = info.lower()
-            if any(keyword in lowered for keyword in cls._EMERGENCY_WARNING_KEYWORDS):
+            for keyword in keywords:
+                if keyword in lowered:
+                    return True
+        return False
+
+    @classmethod
+    def _message_contains_warning(
+        cls,
+        message: Dict[str, Any],
+        *,
+        codes: Optional[Iterable[int]] = None,
+        keywords: Iterable[str] = (),
+    ) -> bool:
+        for warning in cls._warning_items(message):
+            if cls._warning_matches_entry(warning, codes=codes, keywords=keywords):
                 return True
         return False
+
+    @classmethod
+    def _matches_emergency_warning_entry(cls, entry: Any) -> bool:
+        return cls._warning_matches_entry(
+            entry,
+            codes=(cls.EMERGENCY_WARNING_CODE,),
+            keywords=cls._EMERGENCY_WARNING_KEYWORDS,
+        )
 
     @classmethod
     def is_emergency_button_warning(cls, message: Dict[str, Any]) -> bool:
@@ -434,6 +512,26 @@ class CodroidAPI:
             if cls._matches_emergency_warning_entry(entry):
                 return True
         return False
+
+    @classmethod
+    def is_overspeed_warning(cls, message: Dict[str, Any]) -> bool:
+        if message.get("action") != "RobotWarning":
+            return False
+        return cls._message_contains_warning(
+            message,
+            codes=(cls.OVERSPEED_WARNING_CODE,),
+            keywords=cls._OVERSPEED_WARNING_KEYWORDS,
+        )
+
+    @classmethod
+    def is_joint_protection_warning(cls, message: Dict[str, Any]) -> bool:
+        if message.get("action") != "RobotWarning":
+            return False
+        return cls._message_contains_warning(
+            message,
+            codes=(cls.JOINT_PROTECTION_WARNING_CODE,),
+            keywords=cls._JOINT_PROTECTION_WARNING_KEYWORDS,
+        )
 
     @classmethod
     def is_robot_warning_cleared(cls, message: Dict[str, Any]) -> bool:
@@ -473,32 +571,31 @@ class CodroidAPI:
         """Send the UI error-clear command (501) used after emergency conditions."""
         await self.set_robot_command(self.config.commands.clear_error)
 
-    async def clear_emergency_stop(self) -> None:
-        """Clear emergency stop condition by following the standard recovery sequence."""
-        # Based on HAR analysis: stop -> power cycle -> clear error
+    async def _run_error_recovery_sequence(self) -> None:
+        """Shared recovery sequence for clearing alarmed states."""
         await self.stop_command()
-        await asyncio.sleep(0.1)  # Brief pause between commands
+        await asyncio.sleep(0.1)
         await self.power_off()
-        await asyncio.sleep(0.5)  # Allow power off to complete
+        await asyncio.sleep(0.5)
         await self.power_on()
-        await asyncio.sleep(0.5)  # Allow power on to complete
+        await asyncio.sleep(0.5)
         await self.clear_robot_error()
         await asyncio.sleep(0.2)
+
+    async def clear_emergency_stop(self) -> None:
+        """Clear emergency stop condition by following the standard recovery sequence."""
+        await self._run_error_recovery_sequence()
 
     async def clear_overspeed(self) -> None:
         """Clear overspeed condition by following the standard recovery sequence."""
-        # Based on HAR analysis: stop -> power cycle -> clear error
-        await self.stop_command()
-        await asyncio.sleep(0.1)  # Brief pause between commands
-        await self.power_off()
-        await asyncio.sleep(0.5)  # Allow power off to complete
-        await self.power_on()
-        await asyncio.sleep(0.5)  # Allow power on to complete
-        await self.clear_robot_error()
-        await asyncio.sleep(0.2)
+        await self._run_error_recovery_sequence()
+
+    async def clear_joint_protection(self) -> None:
+        """Clear joint protection error (e.g., collision) using the recovery sequence."""
+        await self._run_error_recovery_sequence()
 
     async def monitor_robot_errors(self) -> AsyncIterator[Dict[str, Any]]:
-        """Monitor incoming messages for emergency stop or overspeed conditions.
+        """Monitor incoming messages for emergency stop, overspeed, or joint protection conditions.
 
         Yields:
             Dict with keys: error_type (str), detected (bool), message (dict), timestamp (int)
@@ -519,6 +616,15 @@ class CodroidAPI:
             if await self.detect_overspeed(message):
                 yield {
                     "error_type": "overspeed",
+                    "detected": True,
+                    "message": message,
+                    "timestamp": timestamp,
+                }
+
+            # Check for joint protection / collision events
+            if await self.detect_joint_protection(message):
+                yield {
+                    "error_type": "joint_protection",
                     "detected": True,
                     "message": message,
                     "timestamp": timestamp,
@@ -556,6 +662,9 @@ class CodroidAPI:
                         recovery_status = "cleared"
                     elif error_type == "overspeed":
                         await self.clear_overspeed()
+                        recovery_status = "cleared"
+                    elif error_type == "joint_protection":
+                        await self.clear_joint_protection()
                         recovery_status = "cleared"
                     else:
                         recovery_status = "unknown_error_type"

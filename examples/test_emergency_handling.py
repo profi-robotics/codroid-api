@@ -48,6 +48,21 @@ SAMPLE_NORMAL_MESSAGE = {
     }
 }
 
+SAMPLE_JOINT_PROTECTION_MESSAGE = {
+    "type": "Robot",
+    "action": "RobotWarning",
+    "data": {
+        "code": 0,
+        "msg": "",
+        "data": [
+            {
+                "errorCode": 269485321,
+                "info": "Joint collision detected"
+            }
+        ],
+    },
+}
+
 
 async def test_error_detection():
     """Test the error detection methods without network connection."""
@@ -64,6 +79,10 @@ async def test_error_detection():
     # Test overspeed detection
     is_overspeed = await client.detect_overspeed(SAMPLE_OVERSPEED_MESSAGE)
     print(f"Overspeed detection: {'✅ PASS' if is_overspeed else '❌ FAIL'}")
+
+    # Test joint protection detection
+    is_joint = await client.detect_joint_protection(SAMPLE_JOINT_PROTECTION_MESSAGE)
+    print(f"Joint protection detection: {'✅ PASS' if is_joint else '❌ FAIL'}")
 
     # Test normal message (should not detect errors)
     is_emergency_normal = await client.detect_emergency_stop(SAMPLE_NORMAL_MESSAGE)
@@ -104,6 +123,13 @@ async def test_command_methods():
     except Exception as e:
         print(f"  ❌ Overspeed clearing failed: {e}")
 
+    print("Testing joint protection clearing sequence:")
+    try:
+        await client.clear_joint_protection()
+        print("  ✅ Joint protection clearing sequence completed")
+    except Exception as e:
+        print(f"  ❌ Joint protection clearing failed: {e}")
+
 
 async def test_message_structure():
     """Test various message structures to ensure robust detection."""
@@ -129,15 +155,36 @@ async def test_message_structure():
         {"data": {"alarms": [{"type": "overspeed"}]}},
     ]
 
+    joint_variations = [
+        {"data": "joint protection triggered"},
+        {"data": {"alarms": [{"description": "Joint collision detected"}]}},
+        {
+            "type": "Robot",
+            "action": "RobotWarning",
+            "data": {
+                "code": 0,
+                "msg": "",
+                "data": [
+                    {
+                        "errorCode": 269485321,
+                        "info": "Joint collision protection triggered",
+                    }
+                ],
+            },
+        },
+    ]
+
     config = CodroidConfig()
     client = CodroidAPI(config)
 
     emergency_detected = 0
     overspeed_detected = 0
+    joint_detected = 0
 
     for i, msg in enumerate(variations):
         is_emergency = await client.detect_emergency_stop(msg)
         is_overspeed = await client.detect_overspeed(msg)
+        is_joint = await client.detect_joint_protection(msg)
 
         if is_emergency:
             emergency_detected += 1
@@ -145,10 +192,21 @@ async def test_message_structure():
         if is_overspeed:
             overspeed_detected += 1
             print(f"  Message {i+1}: Overspeed detected ⚡")
+        if is_joint:
+            joint_detected += 1
+            print(f"  Message {i+1}: Joint protection detected ⚠️")
+
+    base_index = len(variations)
+    for offset, msg in enumerate(joint_variations, start=1):
+        is_joint = await client.detect_joint_protection(msg)
+        if is_joint:
+            joint_detected += 1
+            print(f"  Message {base_index + offset}: Joint protection detected ⚠️")
 
     print(f"\nDetection summary:")
     print(f"  Emergency variations detected: {emergency_detected}/4 expected")
     print(f"  Overspeed variations detected: {overspeed_detected}/3 expected")
+    print(f"  Joint variations detected: {joint_detected}/{len(joint_variations)} expected")
 
 
 async def main():
