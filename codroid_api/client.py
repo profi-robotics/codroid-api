@@ -64,6 +64,14 @@ class CodroidConfig:
 
 
 class CodroidAPI:
+    EMERGENCY_WARNING_CODE = 269485313
+    _EMERGENCY_WARNING_KEYWORDS = (
+        "emergency-stop",
+        "emergency stop",
+        "emergency-stop button",
+        "emergency stop button",
+    )
+
     def __init__(self, config: Optional[CodroidConfig] = None) -> None:
         self.config = config or CodroidConfig()
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -396,27 +404,98 @@ class CodroidAPI:
 
         return False
 
+    @staticmethod
+    def _warning_items(message: Dict[str, Any]) -> List[Any]:
+        data = message.get("data")
+        if isinstance(data, dict):
+            warning_data = data.get("data")
+            if isinstance(warning_data, list):
+                return warning_data
+        return []
+
+    @classmethod
+    def _matches_emergency_warning_entry(cls, entry: Any) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("errorCode") == cls.EMERGENCY_WARNING_CODE:
+            return True
+        info = entry.get("info") or entry.get("message") or entry.get("msg")
+        if isinstance(info, str):
+            lowered = info.lower()
+            if any(keyword in lowered for keyword in cls._EMERGENCY_WARNING_KEYWORDS):
+                return True
+        return False
+
+    @classmethod
+    def is_emergency_button_warning(cls, message: Dict[str, Any]) -> bool:
+        if message.get("action") != "RobotWarning":
+            return False
+        for entry in cls._warning_items(message):
+            if cls._matches_emergency_warning_entry(entry):
+                return True
+        return False
+
+    @classmethod
+    def is_robot_warning_cleared(cls, message: Dict[str, Any]) -> bool:
+        if message.get("action") != "RobotWarning":
+            return False
+        warning_items = cls._warning_items(message)
+        return bool(isinstance(warning_items, list) and not warning_items)
+
+    async def watch_emergency_button(self) -> AsyncIterator[Dict[str, Any]]:
+        """Yield emergency button events based on RobotWarning updates."""
+        emergency_active = False
+        async for message in self.listen():
+            if message.get("action") != "RobotWarning":
+                continue
+
+            timestamp = message.get("time") or self._now_ms()
+
+            if self.is_emergency_button_warning(message):
+                if not emergency_active:
+                    emergency_active = True
+                    yield {
+                        "event": "pressed",
+                        "timestamp": timestamp,
+                        "message": message,
+                    }
+                continue
+
+            if emergency_active and self.is_robot_warning_cleared(message):
+                emergency_active = False
+                yield {
+                    "event": "released",
+                    "timestamp": timestamp,
+                    "message": message,
+                }
+
+    async def clear_robot_error(self) -> None:
+        """Send the UI error-clear command (501) used after emergency conditions."""
+        await self.set_robot_command(self.config.commands.clear_error)
+
     async def clear_emergency_stop(self) -> None:
         """Clear emergency stop condition by following the standard recovery sequence."""
-        # Based on HAR analysis: stop -> power cycle -> restore auto mode
+        # Based on HAR analysis: stop -> power cycle -> clear error
         await self.stop_command()
         await asyncio.sleep(0.1)  # Brief pause between commands
         await self.power_off()
         await asyncio.sleep(0.5)  # Allow power off to complete
         await self.power_on()
         await asyncio.sleep(0.5)  # Allow power on to complete
-        await self.set_auto_mode()
+        await self.clear_robot_error()
+        await asyncio.sleep(0.2)
 
     async def clear_overspeed(self) -> None:
         """Clear overspeed condition by following the standard recovery sequence."""
-        # Based on HAR analysis: stop -> power cycle -> restore auto mode
+        # Based on HAR analysis: stop -> power cycle -> clear error
         await self.stop_command()
         await asyncio.sleep(0.1)  # Brief pause between commands
         await self.power_off()
         await asyncio.sleep(0.5)  # Allow power off to complete
         await self.power_on()
         await asyncio.sleep(0.5)  # Allow power on to complete
-        await self.set_auto_mode()
+        await self.clear_robot_error()
+        await asyncio.sleep(0.2)
 
     async def monitor_robot_errors(self) -> AsyncIterator[Dict[str, Any]]:
         """Monitor incoming messages for emergency stop or overspeed conditions.

@@ -14,6 +14,9 @@ class RobotCommandSet:
     manual_mode: int = 3
     auto_mode: int = 5
 
+    # Error handling controls used by the UI to reset alarms.
+    clear_error: int = 501
+
     # Preset moves (held command with heartbeat in the UI).
     move_home: int = 104
     move_safe: int = 1001
