@@ -64,6 +64,22 @@ Detects overspeed conditions in websocket messages.
 is_overspeed = await client.detect_overspeed(message)
 ```
 
+#### `detect_joint_protection(message: Dict[str, Any]) -> bool`
+Detects joint collision/protection warnings.
+
+```python
+if await client.detect_joint_protection(message):
+    print("Joint protection warning detected!")
+```
+
+#### `detect_wrong_tool_error(message: Dict[str, Any]) -> bool`
+Detects wrong tool/payload errors reported via `RobotError`.
+
+```python
+if await client.detect_wrong_tool_error(message):
+    print("Tool/payload mismatch detected!")
+```
+
 ### Clearing Methods
 
 #### `clear_emergency_stop() -> None`
@@ -80,17 +96,53 @@ Executes the recovery sequence to clear overspeed condition.
 await client.clear_overspeed()
 ```
 
+#### `clear_joint_protection() -> None`
+Clears joint protection/collision alarms with the standard recovery flow.
+
+```python
+await client.clear_joint_protection()
+```
+
+#### `clear_tool_error() -> None`
+Runs the recovery flow whenever the wrong tool/payload error is detected.
+
+```python
+await client.clear_tool_error()
+```
+
+### Rescue Controls
+
+#### `enter_rescue_mode() -> None`
+Ensures the robot is powered off before issuing the Rescue button command captured in the HAR (`Robot/Control/command = 4`).
+
+```python
+await client.enter_rescue_mode()
+```
+
+#### `exit_rescue_mode() -> None`
+Powers off the robot (command `2`) as the UI did after completing the rescue flow.
+
+```python
+await client.exit_rescue_mode()
+```
+
 ### Monitoring Methods
 
 #### `monitor_robot_errors() -> AsyncIterator[Dict[str, Any]]`
-Continuously monitors for error conditions.
+Continuously monitors for emergency, overspeed, joint protection, or wrong-tool errors.
 
 ```python
 async for error_event in client.monitor_robot_errors():
-    error_type = error_event["error_type"]  # "emergency_stop" or "overspeed"
-    timestamp = error_event["timestamp"]
-    message = error_event["message"]
-    print(f"Error detected: {error_type} at {timestamp}")
+    error_type = error_event["error_type"]  # "emergency_stop", "overspeed", "joint_protection", or "wrong_tool"
+    print(f"Error detected: {error_type} at {error_event['timestamp']}")
+```
+
+#### `watch_rescue_mode() -> AsyncIterator[Dict[str, Any]]`
+Yields rescue mode transitions whenever `RobotStatus.state` flips into/out of state `3`.
+
+```python
+async for event in client.watch_rescue_mode():
+    print(f"Rescue mode {event['event']} at {event['timestamp']}")
 ```
 
 #### `auto_recover_from_errors(monitor_duration=None, auto_clear=True) -> AsyncIterator[Dict[str, Any]]`
@@ -194,11 +246,24 @@ cd /path/to/codroid-api
 python examples/test_emergency_handling.py
 ```
 
+```bash
+python examples/test_rescue_mode.py
+```
+
 For comprehensive examples:
 
 ```bash
 python examples/emergency_handling.py
 ```
+
+### Live Monitoring Scripts
+
+Helper scripts under `examples/` mirror the HAR captures for fast verification:
+- `examples/test_emergency_button.py` watches the emergency button flow from `emergency-button.har`.
+- `examples/test_overspeed_joint_protection.py` monitors overspeed and joint protection warnings from `overspeed-and-joint-protection.har`.
+- `examples/test_rescue_mode.py` reports wrong tool/payload errors and exposes the Rescue commands captured in `rescue.har` (`enter_rescue_mode`, `exit_rescue_mode`, `clear_tool_error`) plus an `on` command that powers the robot on.
+
+Run them against a live connection when reproducing the recorded faults.
 
 ## Error Detection Patterns
 
@@ -215,6 +280,10 @@ The detection methods look for various patterns in websocket messages:
 - `robot_status.speed_alarm = True`
 - `alarms` array containing overspeed indicators
 - String content containing "overspeed" or "speed"
+
+### Wrong Tool / Rescue Patterns
+- `RobotError` entries with `errorCode = 269485337` and info mentioning payload/tool settings
+- Rescue mode is represented by `RobotStatus.state == 3` and returns to `1` when canceled
 
 ## Configuration
 

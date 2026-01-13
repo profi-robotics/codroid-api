@@ -12,6 +12,7 @@ class RobotCommandSet:
     power_on: int = 1
     power_off: int = 2
     manual_mode: int = 3
+    rescue_mode: int = 4
     auto_mode: int = 5
 
     # Error handling controls used by the UI to reset alarms.

@@ -48,6 +48,24 @@ SAMPLE_NORMAL_MESSAGE = {
     }
 }
 
+SAMPLE_TOOL_ERROR_MESSAGE = {
+    "id": 0,
+    "type": "publish",
+    "code": 200,
+    "msg": "",
+    "action": "RobotError",
+    "data": {
+        "code": 0,
+        "msg": "",
+        "data": [
+            {
+                "errorCode": 269485337,
+                "info": "Wrong payload or tool setting"
+            }
+        ]
+    }
+}
+
 SAMPLE_JOINT_PROTECTION_MESSAGE = {
     "type": "Robot",
     "action": "RobotWarning",
@@ -83,6 +101,10 @@ async def test_error_detection():
     # Test joint protection detection
     is_joint = await client.detect_joint_protection(SAMPLE_JOINT_PROTECTION_MESSAGE)
     print(f"Joint protection detection: {'✅ PASS' if is_joint else '❌ FAIL'}")
+
+    # Test wrong tool/payload detection
+    is_tool_error = await client.detect_wrong_tool_error(SAMPLE_TOOL_ERROR_MESSAGE)
+    print(f"Tool/payload error detection: {'✅ PASS' if is_tool_error else '❌ FAIL'}")
 
     # Test normal message (should not detect errors)
     is_emergency_normal = await client.detect_emergency_stop(SAMPLE_NORMAL_MESSAGE)
@@ -130,6 +152,13 @@ async def test_command_methods():
     except Exception as e:
         print(f"  ❌ Joint protection clearing failed: {e}")
 
+    print("Testing tool/payload clearing sequence:")
+    try:
+        await client.clear_tool_error()
+        print("  ✅ Tool/payload clearing sequence completed")
+    except Exception as e:
+        print(f"  ❌ Tool/payload clearing failed: {e}")
+
 
 async def test_message_structure():
     """Test various message structures to ensure robust detection."""
@@ -174,17 +203,36 @@ async def test_message_structure():
         },
     ]
 
+    error_variations = [
+        {
+            "action": "RobotError",
+            "data": {
+                "code": 0,
+                "msg": "",
+                "data": [
+                    {
+                        "errorCode": 269485337,
+                        "info": "Wrong payload or tool setting",
+                    }
+                ],
+            },
+        },
+        {"action": "RobotError", "data": {"data": [{"info": "Wrong tool setting"}]}},
+    ]
+
     config = CodroidConfig()
     client = CodroidAPI(config)
 
     emergency_detected = 0
     overspeed_detected = 0
     joint_detected = 0
+    tool_detected = 0
 
     for i, msg in enumerate(variations):
         is_emergency = await client.detect_emergency_stop(msg)
         is_overspeed = await client.detect_overspeed(msg)
         is_joint = await client.detect_joint_protection(msg)
+        is_tool = await client.detect_wrong_tool_error(msg)
 
         if is_emergency:
             emergency_detected += 1
@@ -195,6 +243,9 @@ async def test_message_structure():
         if is_joint:
             joint_detected += 1
             print(f"  Message {i+1}: Joint protection detected ⚠️")
+        if is_tool:
+            tool_detected += 1
+            print(f"  Message {i+1}: Tool/payload error detected 🛠️")
 
     base_index = len(variations)
     for offset, msg in enumerate(joint_variations, start=1):
@@ -203,10 +254,17 @@ async def test_message_structure():
             joint_detected += 1
             print(f"  Message {base_index + offset}: Joint protection detected ⚠️")
 
+    error_base = base_index + len(joint_variations)
+    for offset, msg in enumerate(error_variations, start=1):
+        if await client.detect_wrong_tool_error(msg):
+            tool_detected += 1
+            print(f"  Message {error_base + offset}: Tool/payload error detected 🛠️")
+
     print(f"\nDetection summary:")
     print(f"  Emergency variations detected: {emergency_detected}/4 expected")
     print(f"  Overspeed variations detected: {overspeed_detected}/3 expected")
     print(f"  Joint variations detected: {joint_detected}/{len(joint_variations)} expected")
+    print(f"  Tool/payload variations detected: {tool_detected}/{len(error_variations)} expected")
 
 
 async def main():

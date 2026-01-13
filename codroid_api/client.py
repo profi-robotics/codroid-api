@@ -72,6 +72,15 @@ class CodroidAPI:
         "emergency stop button",
     )
 
+    WRONG_TOOL_ERROR_CODE = 269485337
+    _WRONG_TOOL_ERROR_KEYWORDS = ("wrong payload", "tool", "payload setting")
+
+    OVERSPEED_WARNING_CODE = 269485334
+    _OVERSPEED_WARNING_KEYWORDS = ("overspeed", "speed")
+
+    JOINT_PROTECTION_WARNING_CODE = 269485321
+    _JOINT_PROTECTION_WARNING_KEYWORDS = ("joint", "collision")
+
     OVERSPEED_WARNING_CODE = 269485334
     _OVERSPEED_WARNING_KEYWORDS = ("overspeed", "speed")
 
@@ -83,6 +92,7 @@ class CodroidAPI:
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._recv_task: Optional[asyncio.Task[None]] = None
         self._messages: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        self._is_powered_on: bool = False
 
     async def __aenter__(self) -> "CodroidAPI":
         await self.connect()
@@ -344,10 +354,12 @@ class CodroidAPI:
     async def power_on(self) -> None:
         """Power on the robot (command code)."""
         await self.set_robot_command(self.config.commands.power_on)
+        self._is_powered_on = True
 
     async def power_off(self) -> None:
         """Power off the robot (command code)."""
         await self.set_robot_command(self.config.commands.power_off)
+        self._is_powered_on = False
 
     async def set_manual_mode(self) -> None:
         """Switch to manual mode (command code)."""
@@ -452,6 +464,10 @@ class CodroidAPI:
 
         return False
 
+    async def detect_wrong_tool_error(self, message: Dict[str, Any]) -> bool:
+        """Detect wrong payload/tool errors reported via RobotError."""
+        return self.is_wrong_tool_error(message)
+
     @staticmethod
     def _warning_items(message: Dict[str, Any]) -> List[Any]:
         data = message.get("data")
@@ -459,6 +475,15 @@ class CodroidAPI:
             warning_data = data.get("data")
             if isinstance(warning_data, list):
                 return warning_data
+        return []
+
+    @staticmethod
+    def _error_items(message: Dict[str, Any]) -> List[Any]:
+        data = message.get("data")
+        if isinstance(data, dict):
+            error_data = data.get("data")
+            if isinstance(error_data, list):
+                return error_data
         return []
 
     @classmethod
@@ -490,8 +515,10 @@ class CodroidAPI:
         *,
         codes: Optional[Iterable[int]] = None,
         keywords: Iterable[str] = (),
+        items_getter: Optional[Callable[[Dict[str, Any]], List[Any]]] = None,
     ) -> bool:
-        for warning in cls._warning_items(message):
+        getter = items_getter or cls._warning_items
+        for warning in getter(message):
             if cls._warning_matches_entry(warning, codes=codes, keywords=keywords):
                 return True
         return False
@@ -534,6 +561,17 @@ class CodroidAPI:
         )
 
     @classmethod
+    def is_wrong_tool_error(cls, message: Dict[str, Any]) -> bool:
+        if message.get("action") != "RobotError":
+            return False
+        return cls._message_contains_warning(
+            message,
+            codes=(cls.WRONG_TOOL_ERROR_CODE,),
+            keywords=cls._WRONG_TOOL_ERROR_KEYWORDS,
+            items_getter=cls._error_items,
+        )
+
+    @classmethod
     def is_robot_warning_cleared(cls, message: Dict[str, Any]) -> bool:
         if message.get("action") != "RobotWarning":
             return False
@@ -567,6 +605,37 @@ class CodroidAPI:
                     "message": message,
                 }
 
+    async def watch_rescue_mode(self) -> AsyncIterator[Dict[str, Any]]:
+        """Track rescue mode state transitions emitted through RobotStatus."""
+        rescue_active = False
+        async for message in self.listen():
+            if message.get("action") != "RobotStatus":
+                continue
+
+            status_data = message.get("data", {}).get("data", {}) or {}
+            state = status_data.get("state")
+            if state is None:
+                continue
+
+            timestamp = message.get("time") or self._now_ms()
+
+            if state == 3 and not rescue_active:
+                rescue_active = True
+                yield {
+                    "event": "entered",
+                    "timestamp": timestamp,
+                    "state": state,
+                    "message": message,
+                }
+            elif state != 3 and rescue_active:
+                rescue_active = False
+                yield {
+                    "event": "exited",
+                    "timestamp": timestamp,
+                    "state": state,
+                    "message": message,
+                }
+
     async def clear_robot_error(self) -> None:
         """Send the UI error-clear command (501) used after emergency conditions."""
         await self.set_robot_command(self.config.commands.clear_error)
@@ -594,8 +663,27 @@ class CodroidAPI:
         """Clear joint protection error (e.g., collision) using the recovery sequence."""
         await self._run_error_recovery_sequence()
 
+    async def clear_tool_error(self) -> None:
+        """Clear wrong tool/payload errors using the shared recovery sequence."""
+        await self._run_error_recovery_sequence()
+
+    async def enter_rescue_mode(self) -> None:
+        """Trigger the Rescue mode command (Robot/Control/command = 4)."""
+        await self._ensure_powered_off()
+        await self.set_robot_command(self.config.commands.rescue_mode)
+
+    async def exit_rescue_mode(self) -> None:
+        """Exit Rescue mode by powering off the robot (command 2)."""
+        await self.power_off()
+
+    async def _ensure_powered_off(self) -> None:
+        """Ensure the robot is powered off before sending Rescue commands."""
+        if self._is_powered_on:
+            await self.power_off()
+            await asyncio.sleep(0.5)
+
     async def monitor_robot_errors(self) -> AsyncIterator[Dict[str, Any]]:
-        """Monitor incoming messages for emergency stop, overspeed, or joint protection conditions.
+        """Monitor incoming messages for emergency stop, overspeed, joint protection, or tool errors.
 
         Yields:
             Dict with keys: error_type (str), detected (bool), message (dict), timestamp (int)
@@ -625,6 +713,15 @@ class CodroidAPI:
             if await self.detect_joint_protection(message):
                 yield {
                     "error_type": "joint_protection",
+                    "detected": True,
+                    "message": message,
+                    "timestamp": timestamp,
+                }
+
+            # Check for wrong tool/payload errors
+            if await self.detect_wrong_tool_error(message):
+                yield {
+                    "error_type": "wrong_tool",
                     "detected": True,
                     "message": message,
                     "timestamp": timestamp,
@@ -665,6 +762,9 @@ class CodroidAPI:
                         recovery_status = "cleared"
                     elif error_type == "joint_protection":
                         await self.clear_joint_protection()
+                        recovery_status = "cleared"
+                    elif error_type == "wrong_tool":
+                        await self.clear_tool_error()
                         recovery_status = "cleared"
                     else:
                         recovery_status = "unknown_error_type"
