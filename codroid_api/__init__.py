@@ -12,6 +12,9 @@ from codroid_api.commands import (
 from codroid_api.robot_session import RobotPosture, RobotSession
 from codroid_api.settings import CodroidSettings
 
+DEFAULT_FLANGE_BUTTON_PORT = 41
+DEFAULT_FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
+
 __all__ = [
     "CodroidAPI",
     "CodroidConfig",
@@ -27,4 +30,6 @@ __all__ = [
     "CaptureMessage",
     "extract_send_messages",
     "load_capture",
+    "DEFAULT_FLANGE_BUTTON_PORT",
+    "DEFAULT_FLANGE_BUTTON_PORTS",
 ]
