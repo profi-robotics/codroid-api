@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from codroid_api.client import CodroidAPI
 from codroid_api.settings import CodroidSettings
+from websockets.exceptions import ConnectionClosed
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -129,6 +130,30 @@ class RobotSession:
         if parsed.port:
             settings.robot_port = parsed.port
         return settings
+
+    @staticmethod
+    def _api_is_open(api: Optional[CodroidAPI]) -> bool:
+        """Return True when the underlying websocket appears open."""
+        if api is None:
+            return False
+        ws = getattr(api, "_ws", None)
+        if ws is None:
+            return False
+        try:
+            closed = getattr(ws, "closed", None)
+            if isinstance(closed, bool):
+                return not closed
+        except Exception:
+            pass
+        state = getattr(ws, "state", None)
+        if state is not None:
+            state_text = str(state).lower()
+            if "open" in state_text:
+                return True
+            if "closed" in state_text:
+                return False
+        close_code = getattr(ws, "close_code", None)
+        return close_code is None
 
     def clear_position(self) -> None:
         with self._position_lock:
@@ -288,7 +313,11 @@ class RobotSession:
 
     def is_connected(self, robot_uri: str) -> bool:
         resolved_uri = robot_uri or self.default_robot_uri()
-        return self.robot_api is not None and self.robot_uri == resolved_uri
+        return (
+            self.robot_api is not None
+            and self.robot_uri == resolved_uri
+            and self._api_is_open(self.robot_api)
+        )
 
     def default_robot_uri(self) -> str:
         return f"ws://{self._settings.host}:{self._settings.robot_port}/"
@@ -352,7 +381,10 @@ class RobotSession:
 
     async def _stop_user_monitor(self) -> None:
         task = self.user_listener_task
-        if task is not None and not task.done():
+        if task is not None and task.done():
+            with contextlib.suppress(Exception):
+                task.exception()
+        elif task is not None:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -364,8 +396,25 @@ class RobotSession:
         if not user_config.userwsid:
             user_config.userwsid = f"ws{uuid.uuid4().hex[:12]}"
 
-        if self.user_api is not None and self.user_uri == user_uri:
+        if (
+            self.user_api is not None
+            and self.user_uri == user_uri
+            and self._api_is_open(self.user_api)
+        ):
             return
+
+        if (
+            self.user_api is not None
+            and self.user_uri == user_uri
+            and not self._api_is_open(self.user_api)
+        ):
+            await self._stop_user_monitor()
+            try:
+                await self.user_api.__aexit__(None, None, None)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Error closing stale user connection: %s", exc)
+            self.user_api = None
+            self.user_uri = None
 
         if self.user_api is not None and self.user_uri != user_uri:
             await self._stop_user_monitor()
@@ -458,13 +507,21 @@ class RobotSession:
     async def _connect_on_loop(self, robot_uri: str) -> CodroidAPI:
         resolved_uri = robot_uri or self.default_robot_uri()
         settings = self._apply_robot_uri(resolved_uri)
-        await self._ensure_user_connection_on_loop(settings)
 
         if self.robot_api is not None and self.robot_uri == resolved_uri:
-            # LOGGER.debug(
-            #     "Reusing existing robot connection to %s", resolved_uri)
-            await self._ensure_robot_monitor(self.robot_api)
-            return self.robot_api
+            if self._api_is_open(self.robot_api):
+                await self._ensure_robot_monitor(self.robot_api)
+                return self.robot_api
+            LOGGER.info(
+                "Detected stale robot websocket for %s; reconnecting.",
+                resolved_uri,
+            )
+            await self._stop_robot_monitor()
+            try:
+                await self.robot_api.__aexit__(None, None, None)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Error closing stale robot connection: %s", exc)
+            self.robot_api = None
 
         if self.robot_api is not None and self.robot_uri != resolved_uri:
             LOGGER.info(
@@ -478,6 +535,8 @@ class RobotSession:
             except Exception:
                 pass
             self.robot_api = None
+
+        await self._ensure_user_connection_on_loop(settings)
 
         LOGGER.info("Creating persistent robot connection to %s", resolved_uri)
         robot_config = settings.build_robot_config()
@@ -617,19 +676,28 @@ class RobotSession:
                                 )
             except asyncio.CancelledError:
                 raise
+            except ConnectionClosed as exc:
+                LOGGER.debug("Robot listener closed: %s", exc)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.error("Robot listener error: %s", exc, exc_info=True)
 
         async def _poll_io() -> None:
             LOGGER.debug("Robot IO poll task started.")
-            while True:
-                request = robot_api.build_message(
-                    message_type="IOManager",
-                    action="GetIOValue",
-                    data=list(self._flange_button_ports),
-                )
-                await robot_api.send_message(request)
-                await asyncio.sleep(self._io_poll_interval)
+            try:
+                while True:
+                    request = robot_api.build_message(
+                        message_type="IOManager",
+                        action="GetIOValue",
+                        data=list(self._flange_button_ports),
+                    )
+                    await robot_api.send_message(request)
+                    await asyncio.sleep(self._io_poll_interval)
+            except asyncio.CancelledError:
+                raise
+            except ConnectionClosed as exc:
+                LOGGER.debug("Robot IO poll task stopped (connection closed): %s", exc)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Robot IO poll task stopped: %s", exc)
 
         if self.robot_listener_task is None or self.robot_listener_task.done():
             self.robot_listener_task = asyncio.create_task(_listener())
@@ -639,7 +707,11 @@ class RobotSession:
     async def _stop_robot_monitor(self) -> None:
         tasks = [self.robot_listener_task, self.robot_poll_task]
         for task in tasks:
-            if task is None or task.done():
+            if task is None:
+                continue
+            if task.done():
+                with contextlib.suppress(Exception):
+                    task.exception()
                 continue
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
