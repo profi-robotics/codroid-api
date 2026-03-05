@@ -20,6 +20,14 @@ from codroid_api.commands import (
     RobotJogReference,
     RobotTargetPosType,
 )
+from codroid_api.onrobot import (
+    OnRobotAction,
+    OnRobotModel,
+    OnRobotProfile,
+    onrobot_model_code,
+    validate_model_action,
+    validate_payload_and_cog,
+)
 
 
 @dataclass
@@ -95,6 +103,9 @@ class CodroidAPI:
         self._recv_task: Optional[asyncio.Task[None]] = None
         self._messages: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         self._is_powered_on: bool = False
+        self.active_usercode: str = self.config.usercode or ""
+        self.active_userwsid: str = self.config.userwsid or ""
+        self.active_user_login_type: str = ""
 
     async def __aenter__(self) -> "CodroidAPI":
         await self.connect()
@@ -232,6 +243,11 @@ class CodroidAPI:
             },
         )
         await self.send_message(payload)
+        self.active_usercode = resolved_usercode
+        self.active_userwsid = resolved_userwsid
+        self.active_user_login_type = "usercode"
+        self.config.usercode = resolved_usercode
+        self.config.userwsid = resolved_userwsid
 
     async def ws_login_with_password(
         self,
@@ -250,6 +266,11 @@ class CodroidAPI:
             userwsid=resolved_userwsid,
             wstype=wstype,
         )
+        self.active_usercode = usercode
+        self.active_userwsid = resolved_userwsid
+        self.active_user_login_type = "password"
+        self.config.usercode = usercode
+        self.config.userwsid = resolved_userwsid
         return login
 
     async def http_login(
@@ -310,6 +331,40 @@ class CodroidAPI:
         )
         await self.send_message(payload)
 
+    def user_logout_payload(self) -> Dict[str, Any]:
+        """Build a stable user logout payload using effective login context."""
+        return {
+            "username": self.config.username,
+            "usercode": self.active_usercode or self.config.usercode,
+            "userwsid": self.active_userwsid or self.config.userwsid,
+            "wstype": self.config.ws_user_type,
+        }
+
+    def robot_logout_payload(self) -> Dict[str, Any]:
+        """Build a robot logout payload matching the login shape."""
+        return {
+            "name": self.config.robot_login_name,
+            "password": self.config.robot_password,
+            "username": self.config.username,
+            "wstype": self.config.robot_ws_type,
+        }
+
+    def build_user_logout_message(self, action: str = "wslogout") -> Dict[str, Any]:
+        """Build a user logout message for the given action."""
+        return self.build_message(
+            message_type="user",
+            action=action,
+            data=self.user_logout_payload(),
+        )
+
+    def build_robot_logout_message(self, action: str = "Logout") -> Dict[str, Any]:
+        """Build a robot logout message for the given action."""
+        return self.build_message(
+            message_type="user",
+            action=action,
+            data=self.robot_logout_payload(),
+        )
+
     async def read_config(self) -> None:
         payload = self.build_message(
             message_type="System", action="ReadConfig", data="")
@@ -337,6 +392,156 @@ class CodroidAPI:
     async def set_param(self, path: str, value: Any) -> None:
         """Send a single setparam control update."""
         await self.set_params([{"path": path, "value": value}])
+
+    async def set_onrobot_model(self, model: str) -> None:
+        """Apply OnRobot model selection using provisional tool mapping."""
+        model_code = onrobot_model_code(model)
+        await self.set_param(self.config.control_paths.tool_model, model_code)
+
+    async def set_onrobot_payload(
+        self,
+        payload_kg: float,
+        cog_x_m: float,
+        cog_y_m: float,
+        cog_z_m: float,
+    ) -> None:
+        """Apply payload and center-of-gravity values for the active OnRobot tool."""
+        validate_payload_and_cog(payload_kg, cog_x_m, cog_y_m, cog_z_m)
+        await self.set_params(
+            [
+                {
+                    "path": self.config.control_paths.tool_payload,
+                    "value": float(payload_kg),
+                },
+                {
+                    "path": self.config.control_paths.tool_cog,
+                    "value": {"x": float(cog_x_m), "y": float(cog_y_m), "z": float(cog_z_m)},
+                },
+            ]
+        )
+
+    async def set_onrobot_profile(self, profile: OnRobotProfile) -> None:
+        """Apply a full OnRobot profile (model, payload/CoG, model params)."""
+        model_code = onrobot_model_code(profile.model)
+        validate_payload_and_cog(
+            profile.payload_kg,
+            profile.cog_x_m,
+            profile.cog_y_m,
+            profile.cog_z_m,
+        )
+        await self.set_params(
+            [
+                {"path": self.config.control_paths.tool_model, "value": model_code},
+                {"path": self.config.control_paths.tool_payload, "value": float(profile.payload_kg)},
+                {
+                    "path": self.config.control_paths.tool_cog,
+                    "value": {
+                        "x": float(profile.cog_x_m),
+                        "y": float(profile.cog_y_m),
+                        "z": float(profile.cog_z_m),
+                    },
+                },
+                {
+                    "path": self.config.control_paths.tool_params,
+                    "value": dict(profile.params),
+                },
+            ]
+        )
+
+    async def onrobot_action(self, model: str, action: str, **kwargs: Any) -> None:
+        """Send a model-aware OnRobot runtime action through setparam."""
+        normalized_model, normalized_action = validate_model_action(model, action)
+        await self.set_param(
+            self.config.control_paths.tool_action,
+            {
+                "model": onrobot_model_code(normalized_model),
+                "action": normalized_action,
+                "args": dict(kwargs),
+            },
+        )
+
+    async def onrobot_2fg7_open(
+        self,
+        width_mm: float = 70.0,
+        speed_pct: int = 50,
+    ) -> None:
+        """Open OnRobot 2FG7 with provisional width/speed arguments."""
+        await self.onrobot_action(
+            OnRobotModel.FG2_7,
+            OnRobotAction.OPEN,
+            width_mm=width_mm,
+            speed_pct=speed_pct,
+        )
+
+    async def onrobot_2fg7_close(
+        self,
+        width_mm: float = 0.0,
+        force_pct: int = 50,
+        speed_pct: int = 50,
+    ) -> None:
+        """Close OnRobot 2FG7 with provisional width/force/speed arguments."""
+        await self.onrobot_action(
+            OnRobotModel.FG2_7,
+            OnRobotAction.CLOSE,
+            width_mm=width_mm,
+            force_pct=force_pct,
+            speed_pct=speed_pct,
+        )
+
+    async def onrobot_vgc10_vacuum_on(
+        self,
+        vacuum_pct: int = 80,
+        channel: int = 1,
+    ) -> None:
+        """Enable VGC10 vacuum output using provisional mapping."""
+        await self.onrobot_action(
+            OnRobotModel.VGC10,
+            OnRobotAction.VACUUM_ON,
+            vacuum_pct=vacuum_pct,
+            channel=channel,
+        )
+
+    async def onrobot_vgc10_vacuum_off(self, channel: int = 1) -> None:
+        """Disable VGC10 vacuum output using provisional mapping."""
+        await self.onrobot_action(
+            OnRobotModel.VGC10,
+            OnRobotAction.VACUUM_OFF,
+            channel=channel,
+        )
+
+    async def onrobot_vgc10_blow_off(
+        self,
+        duration_ms: int = 250,
+        channel: int = 1,
+    ) -> None:
+        """Trigger VGC10 blow-off output using provisional mapping."""
+        await self.onrobot_action(
+            OnRobotModel.VGC10,
+            OnRobotAction.BLOW_OFF,
+            duration_ms=duration_ms,
+            channel=channel,
+        )
+
+    async def onrobot_soft_gripper_grip(
+        self,
+        pressure_pct: int = 50,
+        duration_ms: int = 300,
+    ) -> None:
+        """Close Soft Gripper fingers using provisional pressure/duration args."""
+        await self.onrobot_action(
+            OnRobotModel.SOFT_GRIPPER,
+            OnRobotAction.GRIP,
+            pressure_pct=pressure_pct,
+            duration_ms=duration_ms,
+        )
+
+    async def onrobot_soft_gripper_release(self, duration_ms: int = 300) -> None:
+        """Release Soft Gripper fingers using provisional duration args."""
+        await self.onrobot_action(
+            OnRobotModel.SOFT_GRIPPER,
+            OnRobotAction.RELEASE,
+            duration_ms=duration_ms,
+        )
 
     async def set_robot_command(self, command: int) -> None:
         """Send a robot control command code."""

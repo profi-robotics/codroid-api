@@ -9,6 +9,12 @@ from codroid_api.commands import (
     RobotJogReference,
     RobotTargetPosType,
 )
+from codroid_api.onrobot import (
+    OnRobotAction,
+    OnRobotModel,
+    OnRobotProfile,
+    default_onrobot_profile,
+)
 from codroid_api.robot_session import RobotPosture, RobotSession
 from codroid_api.settings import CodroidSettings
 
@@ -24,6 +30,10 @@ __all__ = [
     "RobotJogMode",
     "RobotJogReference",
     "RobotTargetPosType",
+    "OnRobotAction",
+    "OnRobotModel",
+    "OnRobotProfile",
+    "default_onrobot_profile",
     "RobotPosture",
     "RobotSession",
     "CodroidCapture",

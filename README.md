@@ -2,6 +2,9 @@
 
 Python client for the Codroid robot websocket protocol based on the captured `basics.har` traffic.
 
+Ukrainian version of this README:
+https://github.com/profi-robotics/codroid-api/blob/main/README.uk.md
+
 ## Install (uv)
 
 ```bash
@@ -201,10 +204,55 @@ Use the capture loader to replay the websocket sends from `basics.har` with over
 uv run python examples/replay_capture.py
 ```
 
+## OnRobot Integration (Provisional Mapping)
+
+The API includes provisional OnRobot support for `2FG7`, `VGC10`, and
+`Soft Gripper` through existing `common.setparam` transport paths.
+These defaults can vary across controller firmware revisions.
+
+```python
+from codroid_api import (
+    CodroidAPI,
+    OnRobotModel,
+    OnRobotProfile,
+)
+
+# Apply profile (model + payload + center-of-gravity + model params)
+profile = OnRobotProfile(
+    model=OnRobotModel.FG2_7,
+    payload_kg=1.25,
+    cog_x_m=0.0,
+    cog_y_m=0.0,
+    cog_z_m=0.08,
+    params={"force_pct": 55, "speed_pct": 45, "width_mm": 25.0},
+)
+await robot_api.set_onrobot_profile(profile)
+
+# Or set model/payload separately
+await robot_api.set_onrobot_model(OnRobotModel.VGC10)
+await robot_api.set_onrobot_payload(payload_kg=0.8, cog_x_m=0.0, cog_y_m=0.0, cog_z_m=0.05)
+```
+
+Runtime action helpers:
+
+```python
+# 2FG7
+await robot_api.onrobot_2fg7_open(width_mm=70.0, speed_pct=50)
+await robot_api.onrobot_2fg7_close(width_mm=5.0, force_pct=60, speed_pct=40)
+
+# VGC10
+await robot_api.onrobot_vgc10_vacuum_on(vacuum_pct=80, channel=1)
+await robot_api.onrobot_vgc10_vacuum_off(channel=1)
+await robot_api.onrobot_vgc10_blow_off(duration_ms=250, channel=1)
+
+# Soft Gripper
+await robot_api.onrobot_soft_gripper_grip(pressure_pct=50, duration_ms=300)
+await robot_api.onrobot_soft_gripper_release(duration_ms=300)
+```
+
 ## Notes
 
 - Secrets and identifiers are loaded from `.env` via `CodroidSettings`.
 - Add new command codes in `codroid_api/commands.py` and use `CodroidAPI.set_robot_command()` / `set_param()` to wire them.
 - Responses arrive asynchronously; use `listen()` or `recv()` to consume messages.
 - The API is only tested against Codroid Web UI v.1.6.3c (matching the captured HAR).
-- Responses arrive asynchronously; use `listen()` or `recv()` to consume messages.

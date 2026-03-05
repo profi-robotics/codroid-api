@@ -283,18 +283,18 @@ python examples/emergency_handling.py
 
 ### Live Monitoring Scripts
 
-Helper scripts under `examples/` mirror the HAR captures for fast verification:
-- `examples/test_emergency_button.py` watches the emergency button flow from `emergency-button.har`.
-- `examples/test_overspeed_joint_protection.py` monitors overspeed and joint protection warnings from `overspeed-and-joint-protection.har`.
-- `examples/test_rescue_mode.py` reports wrong tool/payload errors and exposes the Rescue commands captured in `rescue.har` (`enter_rescue_mode`, `exit_rescue_mode`, `clear_tool_error`) plus an `on` command that powers the robot on.
+Helper scripts under `examples/` mirror known controller behaviors for fast verification:
+- `examples/test_emergency_button.py` watches emergency button warning transitions.
+- `examples/test_overspeed_joint_protection.py` monitors overspeed and joint protection warnings.
+- `examples/test_rescue_mode.py` reports wrong tool/payload errors and exposes Rescue mode operations (`enter_rescue_mode`, `exit_rescue_mode`, `clear_tool_error`) plus an `on` command that powers the robot on.
 - `examples/test_auto_mode_loop.py` exercises the automatic movement between candle and safe presets at 100% manual move rate so you can verify the auto workflow end-to-end.
 
 Run them against a live connection when reproducing the recorded faults.
 
 ## Auto Mode Notes (Manual Motion)
 
-Analysis of `auto.har` shows that the UI does not send manual move commands while in
-auto mode. Instead, it switches to project execution and drives program steps:
+Observed controller behavior shows that the UI does not send manual move commands
+while in auto mode. Instead, it switches to project execution and drives program steps:
 
 - `projexecute.run` with `mode=2` (auto mode)
 - Repeated `common.setparam` calls to `Instruction/Project/projectStepSignal = true`

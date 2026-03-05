@@ -72,3 +72,8 @@ class RobotControlPaths:
     target_pos_type: str = "Robot/Control/targetPosType"
     target_a_pos: str = "Robot/Control/targetAPos"
     target_c_pos: str = "Robot/Control/targetCPos"
+    tool_model: str = "Robot/Control/toolModel"
+    tool_payload: str = "Robot/Control/toolPayload"
+    tool_cog: str = "Robot/Control/toolCog"
+    tool_action: str = "Robot/Control/toolAction"
+    tool_params: str = "Robot/Control/toolParams"

@@ -42,6 +42,7 @@ class RobotSession:
         flange_button_port: int = 41,
         flange_button_ports: Optional[Iterable[int]] = None,
         io_poll_interval: float = 0.2,
+        release_grace_period_s: float = 0.5,
     ) -> None:
         self._settings = settings or CodroidSettings()
         self._primary_flange_port = flange_button_port
@@ -49,6 +50,8 @@ class RobotSession:
             flange_button_ports = (flange_button_port,)
         self._flange_button_ports = tuple(flange_button_ports)
         self._io_poll_interval = io_poll_interval
+        self._release_grace_period_s = max(0.0, release_grace_period_s)
+        self._acquire_not_before: float = 0.0
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._loop_lock = threading.Lock()
@@ -85,6 +88,9 @@ class RobotSession:
         self.robot_listener_task: Optional[asyncio.Task[None]] = None
         self.robot_poll_task: Optional[asyncio.Task[None]] = None
         self.robot_press_queue: Optional[asyncio.Queue[Dict[str, Any]]] = None
+        self._control_mode: str = "acquired"
+        self._released_at: float = 0.0
+        self._last_release_error: Optional[str] = None
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         with self._loop_lock:
@@ -326,14 +332,48 @@ class RobotSession:
         settings = self._apply_robot_uri(robot_uri or self.default_robot_uri())
         return {"host": settings.host, "port": settings.robot_port}
 
+    def control_state(self) -> Dict[str, Any]:
+        return {
+            "mode": self._control_mode,
+            "released_at": float(self._released_at),
+            "last_error": self._last_release_error,
+        }
+
     async def connect(self, robot_uri: str) -> CodroidAPI:
         return await self._run_on_loop(self._connect_on_loop(robot_uri))
+
+    async def acquire_control(
+        self,
+        robot_uri: str,
+        *,
+        force_reconnect: bool = False,
+    ) -> CodroidAPI:
+        return await self._run_on_loop(
+            self._acquire_control_on_loop(robot_uri, force_reconnect=force_reconnect)
+        )
+
+    async def release_control(
+        self,
+        robot_uri: str,
+        *,
+        power_off: bool = True,
+        wait_closed_s: float = 2.0,
+    ) -> Dict[str, Any]:
+        return await self._run_on_loop(
+            self._release_control_on_loop(
+                robot_uri,
+                power_off=power_off,
+                wait_closed_s=wait_closed_s,
+            )
+        )
 
     async def close(self) -> None:
         await self._run_on_loop(self._close_on_loop())
 
-    async def probe(self, robot_uri: str) -> Dict[str, Any]:
+    async def probe(self, robot_uri: str, *, require_acquired: bool = False) -> Dict[str, Any]:
         async def _runner() -> Dict[str, Any]:
+            if require_acquired and self._control_mode == "released":
+                raise RuntimeError("Robot control is released; acquire control first.")
             robot_api = await self._connect_on_loop(robot_uri)
             if hasattr(robot_api, "read_system_data"):
                 await robot_api.read_system_data()
@@ -345,8 +385,12 @@ class RobotSession:
         self,
         robot_uri: str,
         action: Callable[[CodroidAPI], Awaitable[T]],
+        *,
+        require_acquired: bool = False,
     ) -> T:
         async def _runner() -> T:
+            if require_acquired and self._control_mode == "released":
+                raise RuntimeError("Robot control is released; acquire control first.")
             robot_api = await self._connect_on_loop(robot_uri)
             return await action(robot_api)
 
@@ -452,44 +496,129 @@ class RobotSession:
         await self._ensure_user_monitor(user_api)
 
     async def _simulate_user_logout(self, user_api: CodroidAPI) -> None:
-        config = user_api.config
-        payload = {
-            "username": config.username,
-            "usercode": config.usercode,
-            "userwsid": config.userwsid,
-            "wstype": config.ws_user_type,
-        }
         for action in ("wslogout", "logout", "Logout"):
             try:
-                message = user_api.build_message(
-                    message_type="user",
-                    action=action,
-                    data=payload,
-                )
+                message = user_api.build_user_logout_message(action=action)
                 await user_api.send_message(message)
                 LOGGER.debug("Sent user logout message: %s", action)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.debug("User logout action %s failed: %s", action, exc)
 
     async def _simulate_robot_logout(self, robot_api: CodroidAPI) -> None:
-        config = robot_api.config
-        payload = {
-            "name": config.robot_login_name,
-            "password": config.robot_password,
-            "username": config.username,
-            "wstype": config.robot_ws_type,
-        }
         for action in ("Logout", "logout"):
             try:
-                message = robot_api.build_message(
-                    message_type="user",
-                    action=action,
-                    data=payload,
-                )
+                message = robot_api.build_robot_logout_message(action=action)
                 await robot_api.send_message(message)
                 LOGGER.debug("Sent robot logout message: %s", action)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.debug("Robot logout action %s failed: %s", action, exc)
+
+    async def _verify_closed(
+        self,
+        *,
+        user_api: Optional[CodroidAPI],
+        robot_api: Optional[CodroidAPI],
+        wait_closed_s: float,
+    ) -> None:
+        deadline = time.monotonic() + max(0.0, wait_closed_s)
+        while time.monotonic() <= deadline:
+            user_open = self._api_is_open(user_api)
+            robot_open = self._api_is_open(robot_api)
+            if not user_open and not robot_open:
+                return
+            await asyncio.sleep(0.05)
+        raise RuntimeError(
+            "Websocket close verification failed "
+            f"(user_open={self._api_is_open(user_api)}, robot_open={self._api_is_open(robot_api)})."
+        )
+
+    async def _release_connections_on_loop(
+        self,
+        *,
+        resolved_uri: str,
+        power_off: bool,
+        wait_closed_s: float,
+        mark_released: bool,
+    ) -> Dict[str, Any]:
+        started = time.monotonic()
+        LOGGER.info(
+            "control_release_started uri=%s power_off=%s",
+            resolved_uri,
+            power_off,
+        )
+
+        user_api = self.user_api
+        robot_api = self.robot_api
+        failed_step = ""
+        try:
+            if robot_api is not None and self._api_is_open(robot_api):
+                failed_step = "stop_command"
+                with contextlib.suppress(Exception):
+                    await robot_api.stop_command()
+                if power_off:
+                    failed_step = "power_off"
+                    with contextlib.suppress(Exception):
+                        await robot_api.power_off()
+
+            failed_step = "logout"
+            if user_api is not None and self._api_is_open(user_api):
+                await self._simulate_user_logout(user_api)
+            if robot_api is not None and self._api_is_open(robot_api):
+                await self._simulate_robot_logout(robot_api)
+
+            failed_step = "stop_monitors"
+            await self._stop_user_monitor()
+            await self._stop_robot_monitor()
+
+            failed_step = "close_connections"
+            if user_api is not None:
+                with contextlib.suppress(Exception):
+                    await user_api.__aexit__(None, None, None)
+            if robot_api is not None:
+                with contextlib.suppress(Exception):
+                    await robot_api.__aexit__(None, None, None)
+
+            failed_step = "verify_closed"
+            await self._verify_closed(
+                user_api=user_api,
+                robot_api=robot_api,
+                wait_closed_s=wait_closed_s,
+            )
+
+            self.user_api = None
+            self.user_uri = None
+            self.robot_api = None
+            self.robot_uri = None
+            self.clear_position()
+
+            if mark_released:
+                self._control_mode = "released"
+                self._released_at = time.time()
+                self._last_release_error = None
+                self._acquire_not_before = time.monotonic() + self._release_grace_period_s
+
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            LOGGER.info(
+                "control_release_completed uri=%s elapsed_ms=%s mode=%s",
+                resolved_uri,
+                elapsed_ms,
+                self._control_mode,
+            )
+            return self.control_state()
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            self._last_release_error = str(exc)
+            if mark_released:
+                self._control_mode = "acquired"
+                self._released_at = 0.0
+            LOGGER.error(
+                "control_release_failed uri=%s elapsed_ms=%s step=%s error=%s",
+                resolved_uri,
+                elapsed_ms,
+                failed_step or "unknown",
+                exc,
+            )
+            raise
 
     async def _prime_robot_stream(self, robot_api: CodroidAPI) -> None:
         for call, label in (
@@ -511,6 +640,9 @@ class RobotSession:
         if self.robot_api is not None and self.robot_uri == resolved_uri:
             if self._api_is_open(self.robot_api):
                 await self._ensure_robot_monitor(self.robot_api)
+                self._control_mode = "acquired"
+                self._released_at = 0.0
+                self._last_release_error = None
                 return self.robot_api
             LOGGER.info(
                 "Detected stale robot websocket for %s; reconnecting.",
@@ -549,32 +681,62 @@ class RobotSession:
         self.robot_uri = resolved_uri
         self.clear_position()
         await self._ensure_robot_monitor(robot_api)
+        self._control_mode = "acquired"
+        self._released_at = 0.0
+        self._last_release_error = None
         LOGGER.info("Persistent robot connection established")
         return robot_api
 
-    async def _close_on_loop(self) -> None:
-        if self.user_api is not None:
-            LOGGER.info("Closing persistent user connection")
-            await self._simulate_user_logout(self.user_api)
-            await self._stop_user_monitor()
-            try:
-                await self.user_api.__aexit__(None, None, None)
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.debug("Error closing user connection: %s", exc)
-            self.user_api = None
-            self.user_uri = None
+    async def _acquire_control_on_loop(
+        self,
+        robot_uri: str,
+        *,
+        force_reconnect: bool = False,
+    ) -> CodroidAPI:
+        resolved_uri = robot_uri or self.default_robot_uri()
+        now = time.monotonic()
+        if now < self._acquire_not_before:
+            await asyncio.sleep(self._acquire_not_before - now)
 
-        if self.robot_api is not None:
-            LOGGER.info("Closing persistent robot connection")
-            await self._simulate_robot_logout(self.robot_api)
-            await self._stop_robot_monitor()
-            try:
-                await self.robot_api.__aexit__(None, None, None)
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.warning("Error closing robot connection: %s", exc)
-            self.robot_api = None
-            self.robot_uri = None
-            self.clear_position()
+        if force_reconnect:
+            await self._release_connections_on_loop(
+                resolved_uri=resolved_uri,
+                power_off=False,
+                wait_closed_s=2.0,
+                mark_released=False,
+            )
+
+        robot_api = await self._connect_on_loop(resolved_uri)
+        self._control_mode = "acquired"
+        self._released_at = 0.0
+        self._last_release_error = None
+        return robot_api
+
+    async def _release_control_on_loop(
+        self,
+        robot_uri: str,
+        *,
+        power_off: bool,
+        wait_closed_s: float,
+    ) -> Dict[str, Any]:
+        resolved_uri = robot_uri or self.default_robot_uri()
+        return await self._release_connections_on_loop(
+            resolved_uri=resolved_uri,
+            power_off=power_off,
+            wait_closed_s=wait_closed_s,
+            mark_released=True,
+        )
+
+    async def _close_on_loop(self) -> None:
+        try:
+            await self._release_connections_on_loop(
+                resolved_uri=self.robot_uri or self.default_robot_uri(),
+                power_off=False,
+                wait_closed_s=2.0,
+                mark_released=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Error closing persistent connections: %s", exc)
 
     async def _ensure_robot_monitor(self, robot_api: CodroidAPI) -> None:
         if self.robot_press_queue is None:
