@@ -21,7 +21,7 @@ class _FakeAPI:
         self.keep_open_on_exit = keep_open_on_exit
         self.calls: list[str] = []
         self.config = types.SimpleNamespace(
-            username="admin",
+            username="operator",
             usercode="uc",
             userwsid="wsid",
             ws_user_type="wsuser",
@@ -62,7 +62,7 @@ class ControlHandoffTests(unittest.IsolatedAsyncioTestCase):
             new=mock.AsyncMock(return_value={"usercode": "dyn-code"}),
         ), mock.patch.object(api, "send_message", new=mock.AsyncMock()):
             await api.ws_login_with_password(
-                username="admin",
+                username="operator",
                 password="x",
                 userwsid="ws-123",
             )

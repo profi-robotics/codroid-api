@@ -1,6 +1,8 @@
 # Codroid API
 
-Python client for the Codroid robot websocket protocol based on the captured `basics.har` traffic.
+Python client for the Codroid robot websocket protocol. The command and payload
+helpers were derived from local controller browser captures; raw captures are
+not stored in this repository.
 
 Ukrainian version of this README:
 https://github.com/profi-robotics/codroid-api/blob/main/README.uk.md
@@ -27,12 +29,25 @@ cp .env.example .env
 
 Required for most flows:
 
-- `CODROID_TOKEN`
+- `CODROID_TOKEN` (usually shaped like `user:<username>`)
 - `CODROID_USERNAME`
 - `CODROID_USER_PASSWORD` (or `CODROID_USERCODE`)
 - `CODROID_DEFAULT_PROJECT`, `CODROID_DEFAULT_TASK`, `CODROID_DEFAULT_LABEL` (for `run_project`)
 
-Defaults in `CodroidSettings` mirror the common factory setup; override them in `.env` for your robot.
+The defaults in `CodroidSettings` and `.env.example` are placeholders. Do not
+commit real controller credentials, user codes, HAR files, cookies, or project
+exports that contain site-specific data.
+
+## Public Repository Safety
+
+This client can issue real robot motion, mode, power, and project execution
+commands. Treat all examples as live-motion examples:
+
+- Run only on an isolated robot network that you are authorized to control.
+- Keep `.env` local and untracked.
+- Keep raw browser captures (`*.har`) out of git.
+- Start with low speed and a cleared cell.
+- Review scripts before running them; some examples intentionally move the robot.
 
 ## Usage
 
@@ -89,7 +104,7 @@ from codroid_api import RobotSession
 
 async def main() -> None:
     session = RobotSession()
-    await session.connect("ws://192.168.101.100:9000/")
+    await session.connect("ws://codroid-controller.local:9000/")
     # Access the latest posture snapshot at any time.
     posture = session.position_snapshot()
     print("Posture:", posture.x, posture.y, posture.z)
@@ -188,17 +203,18 @@ async with CodroidAPI(robot_config) as api:
     )
 ```
 
-## Inspect the capture
+## Inspect A Local Capture
 
-List the unique actions captured in the HAR:
+List the unique actions captured in a local HAR file that is not committed:
 
 ```bash
 uv run python examples/inspect_capture.py
 ```
 
-## Replay the captured HAR
+## Replay A Local Capture
 
-Use the capture loader to replay the websocket sends from `basics.har` with overrides for user fields:
+Use the capture loader to replay websocket sends from a local HAR file with
+overrides for user fields:
 
 ```bash
 uv run python examples/replay_capture.py

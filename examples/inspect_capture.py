@@ -2,7 +2,7 @@ from codroid_api import load_capture
 
 
 def main() -> None:
-    capture = load_capture("basics.har")
+    capture = load_capture("local_capture.har")
     counts = capture.action_counts(direction="send")
 
     print("Captured send actions:")

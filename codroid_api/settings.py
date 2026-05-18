@@ -19,13 +19,13 @@ class CodroidSettings(BaseSettings):
         extra="ignore",
     )
 
-    host: str = "192.168.101.100"
+    host: str = "codroid-controller.local"
     ws_port: int = 9098
     robot_port: int = 9000
-    origin: str = "http://192.168.101.100:9098"
-    token: str = "user:admin"
-    username: str = "admin"
-    user_password: str = "123456"
+    origin: str = "http://codroid-controller.local:9098"
+    token: str = "user:YOUR_USERNAME"
+    username: str = "YOUR_USERNAME"
+    user_password: str = ""
     usercode: str = ""
     userwsid: str = ""
     ws_user_type: str = "wsuser"

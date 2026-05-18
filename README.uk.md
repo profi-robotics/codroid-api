@@ -1,6 +1,6 @@
 # Codroid API
 
-Python-клієнт для websocket-протоколу робота Codroid на основі захопленого трафіку `basics.har`.
+Python-клієнт для websocket-протоколу робота Codroid на основі захопленого трафіку `local_capture.har`.
 
 Англомовна версія README:
 https://github.com/profi-robotics/codroid-api/blob/main/README.md
@@ -89,7 +89,7 @@ from codroid_api import RobotSession
 
 async def main() -> None:
     session = RobotSession()
-    await session.connect("ws://192.168.101.100:9000/")
+    await session.connect("ws://codroid-controller.local:9000/")
     # Актуальний знімок пози в будь-який момент.
     posture = session.position_snapshot()
     print("Posture:", posture.x, posture.y, posture.z)
@@ -199,7 +199,7 @@ uv run python examples/inspect_capture.py
 
 ## Відтворення HAR
 
-Використайте loader захоплення, щоб відтворити websocket `send` із `basics.har` із overrides для user-полів:
+Використайте loader захоплення, щоб відтворити websocket `send` із `local_capture.har` із overrides для user-полів:
 
 ```bash
 uv run python examples/replay_capture.py

@@ -4,7 +4,7 @@ from codroid_api import CodroidAPI, CodroidSettings, load_capture
 
 
 async def main() -> None:
-    capture = load_capture("basics.har")
+    capture = load_capture("local_capture.har")
 
     settings = CodroidSettings()
     overrides = {

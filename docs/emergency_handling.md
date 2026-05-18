@@ -13,7 +13,7 @@ The CodroidAPI now provides comprehensive emergency handling capabilities:
 
 ## Implementation Details
 
-Based on the analysis of `overspeed-and-emergency-stop.har`, the following patterns were identified:
+Based on the analysis of `local_emergency_capture.har`, the following patterns were identified:
 
 ### Message Format
 Robot status messages use websocket communication with JSON format:
@@ -21,7 +21,7 @@ Robot status messages use websocket communication with JSON format:
 {
   "id": "ws...",
   "time": 1234567890,
-  "token": "user:admin", 
+  "token": "user:YOUR_USERNAME",
   "type": "common",
   "action": "setparam",
   "data": [{"path": "Robot/Control/command", "value": <command_code>}]
@@ -191,7 +191,7 @@ import asyncio
 from codroid_api.client import CodroidAPI, CodroidConfig
 
 async def basic_example():
-    config = CodroidConfig(host="192.168.101.100")
+    config = CodroidConfig(host="codroid-controller.local")
     
     async with CodroidAPI(config) as client:
         await client.ws_login_with_password()
@@ -216,7 +216,7 @@ asyncio.run(basic_example())
 
 ```python
 async def automated_recovery():
-    config = CodroidConfig(host="192.168.101.100")
+    config = CodroidConfig(host="codroid-controller.local")
     
     async with CodroidAPI(config) as client:
         await client.ws_login_with_password()
@@ -236,7 +236,7 @@ asyncio.run(automated_recovery())
 
 ```python
 async def production_workflow():
-    config = CodroidConfig(host="192.168.101.100")
+    config = CodroidConfig(host="codroid-controller.local")
     
     async with CodroidAPI(config) as client:
         await client.ws_login_with_password()

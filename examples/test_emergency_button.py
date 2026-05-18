@@ -66,17 +66,17 @@ async def console_control(api: CodroidAPI, stop_event: asyncio.Event) -> None:
 
 async def run_live_monitor() -> None:
     parser = argparse.ArgumentParser(description="Live emergency button monitor")
-    parser.add_argument("--host", default=os.getenv("CODROID_HOST", "192.168.101.100"))
+    parser.add_argument("--host", default=os.getenv("CODROID_HOST", "codroid-controller.local"))
     parser.add_argument(
         "--port",
         type=int,
         default=int(os.getenv("CODROID_PORT", "9000")),
         help="Websocket port (default 9000 for robot stream)",
     )
-    parser.add_argument("--origin", default=os.getenv("CODROID_ORIGIN", "http://192.168.101.100:9098"))
-    parser.add_argument("--token", default=os.getenv("CODROID_TOKEN", "user:admin"))
-    parser.add_argument("--username", default=os.getenv("CODROID_USERNAME", "admin"))
-    parser.add_argument("--password", default=os.getenv("CODROID_USER_PASSWORD", "123456"))
+    parser.add_argument("--origin", default=os.getenv("CODROID_ORIGIN", "http://codroid-controller.local:9098"))
+    parser.add_argument("--token", default=os.getenv("CODROID_TOKEN", "user:YOUR_USERNAME"))
+    parser.add_argument("--username", default=os.getenv("CODROID_USERNAME", "YOUR_USERNAME"))
+    parser.add_argument("--password", default=os.getenv("CODROID_USER_PASSWORD", ""))
     parser.add_argument("--debug", action="store_true", help="Enable verbose logging of all RobotWarning payloads")
     args = parser.parse_args()
 

@@ -8,6 +8,8 @@ import asyncio
 import json
 from codroid_api.client import CodroidAPI, CodroidConfig
 
+__test__ = False
+
 # Sample messages for testing (based on HAR analysis patterns)
 SAMPLE_EMERGENCY_MESSAGE = {
     "type": "Robot",

@@ -8,7 +8,7 @@ This example demonstrates how to:
 3. Set up automatic error recovery
 4. Use the error monitoring in a production workflow
 
-Based on the HAR file analysis of overspeed-and-emergency-stop.har
+Based on the HAR file analysis of local_emergency_capture.har
 """
 
 import asyncio
@@ -24,7 +24,7 @@ async def manual_error_detection_example():
     """Example of manual error detection and clearing."""
     logger.info("=== Manual Error Detection Example ===")
 
-    config = CodroidConfig(host="192.168.101.100")
+    config = CodroidConfig(host="codroid-controller.local")
 
     async with CodroidAPI(config) as client:
         # Login
@@ -66,7 +66,7 @@ async def automated_error_monitoring_example():
     """Example of automated error monitoring and recovery."""
     logger.info("=== Automated Error Recovery Example ===")
 
-    config = CodroidConfig(host="192.168.101.100")
+    config = CodroidConfig(host="codroid-controller.local")
 
     async with CodroidAPI(config) as client:
         # Login
@@ -99,7 +99,7 @@ async def error_monitoring_only_example():
     """Example of error monitoring without automatic clearing."""
     logger.info("=== Error Monitoring Only Example ===")
 
-    config = CodroidConfig(host="192.168.101.100")
+    config = CodroidConfig(host="codroid-controller.local")
 
     async with CodroidAPI(config) as client:
         # Login
@@ -130,7 +130,7 @@ async def production_workflow_example():
     """Example of using error handling in a production robot workflow."""
     logger.info("=== Production Workflow with Error Handling ===")
 
-    config = CodroidConfig(host="192.168.101.100")
+    config = CodroidConfig(host="codroid-controller.local")
 
     async with CodroidAPI(config) as client:
         # Login
