@@ -3,7 +3,7 @@ name = "codroid-api"
 version = "0.1.0"
 description = "Python API client for Codroid websocket control."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Codroid API Contributors" }]
 dependencies = [
