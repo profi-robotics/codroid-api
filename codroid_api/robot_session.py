@@ -367,6 +367,12 @@ class RobotSession:
             )
         )
 
+    async def release_user_web_session(self, *, wait_closed_s: float = 2.0) -> Dict[str, Any]:
+        """Release only the controller web/user websocket, keeping robot control."""
+        return await self._run_on_loop(
+            self._release_user_web_session_on_loop(wait_closed_s=wait_closed_s)
+        )
+
     async def close(self) -> None:
         await self._run_on_loop(self._close_on_loop())
 
@@ -532,6 +538,44 @@ class RobotSession:
             f"(user_open={self._api_is_open(user_api)}, robot_open={self._api_is_open(robot_api)})."
         )
 
+    async def _release_user_web_session_on_loop(
+        self,
+        *,
+        wait_closed_s: float,
+    ) -> Dict[str, Any]:
+        started = time.monotonic()
+        user_api = self.user_api
+        user_uri = self.user_uri
+        LOGGER.info("user_web_session_release_started uri=%s", user_uri)
+
+        if user_api is None:
+            await self._stop_user_monitor()
+            self.user_uri = None
+            return {"released": False, "uri": user_uri, "elapsed_ms": 0}
+
+        if self._api_is_open(user_api):
+            await self._simulate_user_logout(user_api)
+
+        await self._stop_user_monitor()
+        with contextlib.suppress(Exception):
+            await user_api.__aexit__(None, None, None)
+
+        await self._verify_closed(
+            user_api=user_api,
+            robot_api=None,
+            wait_closed_s=wait_closed_s,
+        )
+
+        self.user_api = None
+        self.user_uri = None
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        LOGGER.info(
+            "user_web_session_release_completed uri=%s elapsed_ms=%s",
+            user_uri,
+            elapsed_ms,
+        )
+        return {"released": True, "uri": user_uri, "elapsed_ms": elapsed_ms}
+
     async def _release_connections_on_loop(
         self,
         *,
@@ -681,6 +725,8 @@ class RobotSession:
         self.robot_uri = resolved_uri
         self.clear_position()
         await self._ensure_robot_monitor(robot_api)
+        if not settings.keep_user_web_session:
+            await self._release_user_web_session_on_loop(wait_closed_s=2.0)
         self._control_mode = "acquired"
         self._released_at = 0.0
         self._last_release_error = None

@@ -189,6 +189,59 @@ async with CodroidAPI(robot_config) as api:
     )
 ```
 
+## Auto Socket Mode
+
+Auto socket mode дозволяє наявним Cartesian target-move викликам надсилати
+короткі TCP frames у controller-side auto project замість ручного
+`Robot/Control/command` руху. Режим вмикається явно; звичайні manual moves не
+змінюються.
+
+```python
+from codroid_api import AutoSocketConfig, CodroidAPI
+
+config = AutoSocketConfig(
+    # Controller SocketCreate є client, тому codroid-api слухає локально
+    # і підставляє локальний IP у згенерований controller project.
+    socket_bind_host="0.0.0.0",
+    socket_port=8080,
+    install_project=True,
+    start_project=True,
+    stop_project_on_exit=True,
+)
+
+async with CodroidAPI(robot_config) as robot_api:
+    async with robot_api.auto_socket_mode(config):
+        cpos = CodroidAPI.build_target_cpos(x, y, z, a, b, c)
+        await robot_api.move_to_cartesian_target_linear(cpos)
+```
+
+У цьому context `codroid-api` запускає локальний TCP server,
+`set_target_cpos()` кешує target, а команда `106` надсилає
+`[x,y,z,a,b,c]` controller client після підключення згенерованого project.
+Command heartbeat і команда `0` приглушуються, бо рух виконує controller
+project. V1 підтримує тільки linear CPOS moves; joint moves і optimal-path
+команда `107` кидають `NotImplementedError`.
+
+Згенерований project повторює socket example із Codroid manual:
+`SocketCreate`, `SocketReadStr`, `TranStrToCpos` і `MovL` на
+`V100` / `ACC100` / `FINE`. Project запускається з browser-compatible
+параметрами (`onlyapi=0`, `mode=1`), бо саме з ними `SocketCreate` ініціює
+client connection. За замовчуванням install оновлює той самий managed project
+id (`pjcodroidautosock`) замість створення нового project кожного разу. Project
+перевіряє socket return codes навколо читання, тому він повторює підключення,
+якщо API-side listener ще не готовий.
+
+Якщо прошивка контролера відхиляє згенерований dynamic CPOS point, запишіть
+native Codroid controller HAR із `POST /robot/project/edit` або
+`POST /robot/project/bak` та перевірте його:
+
+```python
+from codroid_api import load_capture
+
+capture = load_capture("controller-project.har")
+project_payloads = capture.project_edit_payloads()
+```
+
 ## Перегляд захоплення
 
 Показати унікальні `action` із HAR:

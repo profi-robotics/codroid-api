@@ -1,6 +1,22 @@
 """Codroid websocket client API."""
 
-from codroid_api.capture import CodroidCapture, CaptureMessage, extract_send_messages, load_capture
+from codroid_api.auto_socket import (
+    AutoSocketBackend,
+    AutoSocketConfig,
+    AutoSocketMode,
+    AutoSocketProjectInfo,
+    DEFAULT_AUTO_SOCKET_PROJECT_ID,
+    DEFAULT_AUTO_SOCKET_RUN_LABEL_ID,
+    DEFAULT_AUTO_SOCKET_TASK_ID,
+    format_auto_socket_frame,
+)
+from codroid_api.capture import (
+    CodroidCapture,
+    CaptureHttpEntry,
+    CaptureMessage,
+    extract_send_messages,
+    load_capture,
+)
 from codroid_api.client import CodroidAPI, CodroidConfig
 from codroid_api.commands import (
     RobotCommandSet,
@@ -25,6 +41,14 @@ __all__ = [
     "CodroidAPI",
     "CodroidConfig",
     "CodroidSettings",
+    "AutoSocketBackend",
+    "AutoSocketConfig",
+    "AutoSocketMode",
+    "AutoSocketProjectInfo",
+    "DEFAULT_AUTO_SOCKET_PROJECT_ID",
+    "DEFAULT_AUTO_SOCKET_RUN_LABEL_ID",
+    "DEFAULT_AUTO_SOCKET_TASK_ID",
+    "format_auto_socket_frame",
     "RobotCommandSet",
     "RobotControlPaths",
     "RobotJogMode",
@@ -37,6 +61,7 @@ __all__ = [
     "RobotPosture",
     "RobotSession",
     "CodroidCapture",
+    "CaptureHttpEntry",
     "CaptureMessage",
     "extract_send_messages",
     "load_capture",

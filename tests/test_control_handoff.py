@@ -6,6 +6,7 @@ from unittest import mock
 
 from codroid_api.client import CodroidAPI
 from codroid_api.robot_session import RobotSession
+from codroid_api.settings import CodroidSettings
 
 
 class _FakeWS:
@@ -30,11 +31,47 @@ class _FakeAPI:
             robot_ws_type="wsrobot",
         )
 
+    async def __aenter__(self):
+        self.calls.append("__aenter__")
+        return self
+
     async def stop_command(self) -> None:
         self.calls.append("stop_command")
 
     async def power_off(self) -> None:
         self.calls.append("power_off")
+
+    async def robot_login(self) -> None:
+        self.calls.append("robot_login")
+
+    async def read_config(self) -> None:
+        self.calls.append("read_config")
+
+    async def read_system_data(self) -> None:
+        self.calls.append("read_system_data")
+
+    async def read_global_data(self) -> None:
+        self.calls.append("read_global_data")
+
+    async def get_io_info(self) -> None:
+        self.calls.append("get_io_info")
+
+    async def set_language(self) -> None:
+        self.calls.append("set_language")
+
+    async def ws_login_with_password(self) -> None:
+        self.calls.append("ws_login_with_password")
+
+    async def ws_login(self) -> None:
+        self.calls.append("ws_login")
+
+    async def recv(self, timeout: float = 1.0) -> dict:
+        self.calls.append(f"recv:{timeout}")
+        return {"action": "online"}
+
+    async def listen(self):
+        if False:
+            yield {}
 
     def build_user_logout_message(self, action: str = "wslogout") -> dict:
         return {"action": action, "type": "user"}
@@ -106,6 +143,49 @@ class ControlHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["mode"], "released")
         self.assertIn("stop_command", robot_api.calls)
         self.assertNotIn("power_off", robot_api.calls)
+
+    async def test_release_user_web_session_keeps_robot_connection(self) -> None:
+        session = RobotSession(release_grace_period_s=0.0)
+        user_api = _FakeAPI()
+        robot_api = _FakeAPI()
+        session.user_api = user_api
+        session.user_uri = "ws://host:9098/"
+        session.robot_api = robot_api
+        session.robot_uri = "ws://host:9000/"
+
+        state = await session.release_user_web_session(wait_closed_s=0.2)
+
+        self.assertTrue(state["released"])
+        self.assertIn("send:user:wslogout", user_api.calls)
+        self.assertIn("__aexit__", user_api.calls)
+        self.assertIsNone(session.user_api)
+        self.assertIs(session.robot_api, robot_api)
+        self.assertFalse(RobotSession._api_is_open(user_api))
+        self.assertTrue(RobotSession._api_is_open(robot_api))
+
+    async def test_keep_user_web_session_false_releases_after_connect(self) -> None:
+        settings = CodroidSettings(
+            host="host",
+            ws_port=9098,
+            robot_port=9000,
+            keep_user_web_session=False,
+        )
+        session = RobotSession(settings, release_grace_period_s=0.0)
+        user_api = _FakeAPI()
+        robot_api = _FakeAPI()
+
+        with mock.patch(
+            "codroid_api.robot_session.CodroidAPI",
+            side_effect=[user_api, robot_api],
+        ):
+            connected = await session.connect("ws://host:9000/")
+
+        self.assertIs(connected, robot_api)
+        self.assertIsNone(session.user_api)
+        self.assertIs(session.robot_api, robot_api)
+        self.assertIn("send:user:wslogout", user_api.calls)
+        self.assertIn("__aexit__", user_api.calls)
+        self.assertTrue(RobotSession._api_is_open(robot_api))
 
     async def test_release_control_verification_failure_sets_error(self) -> None:
         session = RobotSession(release_grace_period_s=0.0)

@@ -203,6 +203,62 @@ async with CodroidAPI(robot_config) as api:
     )
 ```
 
+## Auto Socket Mode
+
+Auto socket mode lets existing Cartesian target-move calls send compact TCP
+frames to a controller-side auto project instead of using manual
+`Robot/Control/command` motion. It is opt-in; normal manual moves are unchanged.
+
+```python
+from codroid_api import AutoSocketConfig, CodroidAPI
+
+config = AutoSocketConfig(
+    # The controller SocketCreate command is a client, so codroid-api listens
+    # locally and injects that local IP into the generated controller project.
+    socket_bind_host="0.0.0.0",
+    socket_port=8080,
+    install_project=True,
+    start_project=True,
+    stop_project_on_exit=True,
+)
+
+async with CodroidAPI(robot_config) as robot_api:
+    async with robot_api.auto_socket_mode(config):
+        cpos = CodroidAPI.build_target_cpos(x, y, z, a, b, c)
+        await robot_api.move_to_cartesian_target_linear(cpos)
+```
+
+While the context is active, `codroid-api` runs a local TCP server,
+`set_target_cpos()` caches the target, and command `106` writes
+`[x,y,z,a,b,c]` to the controller client after the generated project connects
+back. Command heartbeats and command `0` are suppressed in this mode because the
+controller project owns motion execution. V1 supports linear CPOS moves only;
+joint moves and optimal path command `107` raise `NotImplementedError`.
+
+Long-running apps that only need the 9098 user websocket for startup can set
+`CodroidSettings.keep_user_web_session=False`. After login and robot stream
+priming, `RobotSession` logs out and closes only the controller web/user
+websocket while leaving the 9000 robot websocket connected. `release_control()`
+still closes both sessions.
+
+The generated project follows the socket example in the Codroid manual:
+`SocketCreate`, `SocketReadStr`, `TranStrToCpos`, and `MovL` at
+`V100` / `ACC100` / `FINE`. It starts the project with the browser-compatible
+run parameters (`onlyapi=0`, `mode=1`), which are required for `SocketCreate` to
+initiate the client connection. By default installs update the same managed
+project id (`pjcodroidautosock`) instead of creating a new project each time.
+The loop checks socket return codes around each read, so it keeps retrying when
+the API-side listener is not connected yet. If a controller firmware rejects the
+generated point schema, record a native Codroid controller HAR that includes the
+`POST /robot/project/edit` or `POST /robot/project/bak` save; inspect it via:
+
+```python
+from codroid_api import load_capture
+
+capture = load_capture("controller-project.har")
+project_payloads = capture.project_edit_payloads()
+```
+
 ## Inspect A Local Capture
 
 List the unique actions captured in a local HAR file that is not committed:

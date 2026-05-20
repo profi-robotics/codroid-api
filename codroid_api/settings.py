@@ -32,6 +32,7 @@ class CodroidSettings(BaseSettings):
     robot_login_name: str = "web"
     robot_password: str = ""
     robot_ws_type: str = "wsrobot"
+    keep_user_web_session: bool = True
     default_language: str = "EN"
     default_project: str = "pjmjbepucimi01gv"
     default_task: str = "tkmjbepuci3lujj8"

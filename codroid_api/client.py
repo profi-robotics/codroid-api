@@ -3,16 +3,24 @@ import contextlib
 import copy
 import json
 import random
+import socket
 import time
 import uuid
 import urllib.error
 import urllib.request
 from urllib.parse import urljoin
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional, Tuple
 
 import websockets
 
+from codroid_api.auto_socket import (
+    AutoSocketBackend,
+    AutoSocketConfig,
+    AutoSocketMode,
+    AutoSocketProjectInfo,
+    build_auto_socket_project,
+)
 from codroid_api.commands import (
     RobotCommandSet,
     RobotControlPaths,
@@ -106,6 +114,7 @@ class CodroidAPI:
         self.active_usercode: str = self.config.usercode or ""
         self.active_userwsid: str = self.config.userwsid or ""
         self.active_user_login_type: str = ""
+        self._auto_socket_backend: Optional[AutoSocketBackend] = None
 
     async def __aenter__(self) -> "CodroidAPI":
         await self.connect()
@@ -545,10 +554,21 @@ class CodroidAPI:
 
     async def set_robot_command(self, command: int) -> None:
         """Send a robot control command code."""
+        if self._auto_socket_backend is not None:
+            if command == 0:
+                return
+            if command in (
+                self.config.commands.move_target_linear,
+                self.config.commands.move_target_optimal,
+            ):
+                await self._auto_socket_backend.send_target_move(command)
+                return
         await self.set_param(self.config.control_paths.command, command)
 
     async def send_command_heartbeat(self, timestamp_ms: Optional[int] = None) -> None:
         """Send the command heartbeat used by held moves."""
+        if self._auto_socket_backend is not None:
+            return
         await self.set_param(
             self.config.control_paths.command_heartbeat,
             timestamp_ms or self._now_ms(),
@@ -1178,18 +1198,30 @@ class CodroidAPI:
 
     async def set_target_pos_type(self, pos_type: int) -> None:
         """Select a target position type (APOS/CPOS families)."""
+        if self._auto_socket_backend is not None:
+            self._auto_socket_backend.set_target_pos_type(pos_type)
+            return
         await self.set_param(self.config.control_paths.target_pos_type, pos_type)
 
     async def set_target_apos(self, position: Dict[str, Any]) -> None:
         """Set a joint-space target position payload."""
+        if self._auto_socket_backend is not None:
+            self._auto_socket_backend.set_target_apos(position)
+            return
         await self.set_param(self.config.control_paths.target_a_pos, position)
 
     async def set_target_cpos(self, position: Dict[str, Any]) -> None:
         """Set a cartesian target position payload."""
+        if self._auto_socket_backend is not None:
+            self._auto_socket_backend.set_target_cpos(position)
+            return
         await self.set_param(self.config.control_paths.target_c_pos, position)
 
     async def clear_target_position(self) -> None:
         """Clear the active target position selection."""
+        if self._auto_socket_backend is not None:
+            self._auto_socket_backend.clear_target_position()
+            return
         await self.set_target_pos_type(self.config.target_pos_types.none)
 
     async def move_to_target_linear(self, reset_after: bool = True) -> None:
@@ -1802,6 +1834,87 @@ class CodroidAPI:
             message_type="projexecute", action="stop", data={})
         await self.send_message(payload)
 
+    def build_auto_socket_project(
+        self,
+        config: Optional[AutoSocketConfig] = None,
+    ) -> AutoSocketProjectInfo:
+        """Build, but do not save, an auto-mode socket project document."""
+        resolved_config = self._resolve_auto_socket_config(
+            config or AutoSocketConfig()
+        )
+        return build_auto_socket_project(
+            resolved_config,
+            controller_host=self.config.host,
+            id_factory=self._node_id,
+        )
+
+    async def install_auto_socket_project(
+        self,
+        config: Optional[AutoSocketConfig] = None,
+    ) -> AutoSocketProjectInfo:
+        """Generate and save an auto-mode socket project on the controller."""
+        info = self.build_auto_socket_project(config)
+        if info.project is None:
+            raise RuntimeError("Generated auto socket project is missing document data.")
+        await self.save_project(info.project)
+        return info
+
+    async def start_auto_socket_project(
+        self,
+        project_info: AutoSocketProjectInfo,
+        config: Optional[AutoSocketConfig] = None,
+    ) -> None:
+        """Run an auto socket project in controller auto mode."""
+        resolved_config = self._resolve_auto_socket_config(
+            config or AutoSocketConfig()
+        )
+        await self.run_project(
+            proj=project_info.project_id,
+            task=project_info.task_id,
+            label=project_info.run_label_id,
+            stat=resolved_config.run_stat,
+            onlyapi=resolved_config.run_onlyapi,
+            mode=resolved_config.run_mode,
+        )
+
+    async def stop_auto_socket_project(self) -> None:
+        """Stop the active controller project used by auto socket mode."""
+        await self.stop_project()
+
+    def auto_socket_mode(
+        self,
+        config: Optional[AutoSocketConfig] = None,
+        *,
+        project_info: Optional[AutoSocketProjectInfo] = None,
+    ) -> AutoSocketMode:
+        """Return a context manager that routes target moves over TCP."""
+        return AutoSocketMode(
+            self,
+            config or AutoSocketConfig(),
+            project_info=project_info,
+        )
+
+    def _resolve_auto_socket_config(
+        self,
+        config: AutoSocketConfig,
+    ) -> AutoSocketConfig:
+        if config.socket_role.lower() != "server":
+            return config
+        if config.project_socket_host:
+            return config
+        advertised_host = config.socket_host or self._local_source_ip_for(
+            self.config.host
+        )
+        return replace(config, project_socket_host=advertised_host)
+
+    def _local_source_ip_for(self, remote_host: str) -> str:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect((remote_host, 9))
+            return str(sock.getsockname()[0])
+        finally:
+            sock.close()
+
     async def _move_to_preset(self, command: int, hold_seconds: float) -> None:
         await self.set_robot_command(command)
         if hold_seconds <= 0:
@@ -1944,6 +2057,10 @@ class CodroidAPI:
                 f"No project content returned for {project_id}.")
         content = data[0]["content"]
         return json.loads(content)
+
+    async def list_projects(self) -> Dict[str, Any]:
+        """Return the controller project list payload."""
+        return await self._http_json("/robot/project/list", method="GET")
 
     async def save_project(self, project: Dict[str, Any]) -> Dict[str, Any]:
         """Save a project document via HTTP."""
