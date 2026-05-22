@@ -119,7 +119,17 @@ class RobotSession:
             return await coro
         loop = self._ensure_loop()
         future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return await asyncio.wrap_future(future)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            future.add_done_callback(self._consume_threadsafe_future_exception)
+            raise
+
+    @staticmethod
+    def _consume_threadsafe_future_exception(future) -> None:
+        with contextlib.suppress(Exception):
+            future.result()
 
     def _apply_robot_uri(self, uri: str) -> CodroidSettings:
         if not uri:
@@ -477,7 +487,13 @@ class RobotSession:
 
         LOGGER.info("Creating persistent user connection to %s", user_uri)
         user_api = CodroidAPI(user_config)
-        await user_api.__aenter__()
+        try:
+            await user_api.__aenter__()
+        except Exception:
+            with contextlib.suppress(Exception):
+                await user_api.__aexit__(None, None, None)
+            raise
+
         try:
             if user_config.user_password:
                 await user_api.ws_login_with_password()
@@ -752,11 +768,21 @@ class RobotSession:
                 mark_released=False,
             )
 
-        robot_api = await self._connect_on_loop(resolved_uri)
-        self._control_mode = "acquired"
-        self._released_at = 0.0
-        self._last_release_error = None
-        return robot_api
+        try:
+            robot_api = await self._connect_on_loop(resolved_uri)
+        except Exception as exc:
+            self._last_release_error = str(exc)
+            LOGGER.warning(
+                "control_acquire_failed uri=%s error=%s",
+                resolved_uri,
+                exc,
+            )
+            raise
+        else:
+            self._control_mode = "acquired"
+            self._released_at = 0.0
+            self._last_release_error = None
+            return robot_api
 
     async def _release_control_on_loop(
         self,

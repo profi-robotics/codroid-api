@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from codroid_api.client import CodroidConfig
@@ -32,6 +34,10 @@ class CodroidSettings(BaseSettings):
     robot_login_name: str = "web"
     robot_password: str = ""
     robot_ws_type: str = "wsrobot"
+    websocket_open_timeout_s: float = 5.0
+    websocket_close_timeout_s: float = 2.0
+    websocket_ping_interval_s: Optional[float] = 20.0
+    websocket_ping_timeout_s: Optional[float] = 30.0
     keep_user_web_session: bool = True
     default_language: str = "EN"
     default_project: str = "pjmjbepucimi01gv"
@@ -79,6 +85,10 @@ class CodroidSettings(BaseSettings):
             robot_login_name=self.robot_login_name,
             robot_password=self.robot_password,
             robot_ws_type=self.robot_ws_type,
+            websocket_open_timeout_s=self.websocket_open_timeout_s,
+            websocket_close_timeout_s=self.websocket_close_timeout_s,
+            websocket_ping_interval_s=self.websocket_ping_interval_s,
+            websocket_ping_timeout_s=self.websocket_ping_timeout_s,
             default_language=self.default_language,
             default_project=self.default_project,
             default_task=self.default_task,
@@ -104,6 +114,10 @@ class CodroidSettings(BaseSettings):
             robot_login_name=self.robot_login_name,
             robot_password=self.robot_password,
             robot_ws_type=self.robot_ws_type,
+            websocket_open_timeout_s=self.websocket_open_timeout_s,
+            websocket_close_timeout_s=self.websocket_close_timeout_s,
+            websocket_ping_interval_s=self.websocket_ping_interval_s,
+            websocket_ping_timeout_s=self.websocket_ping_timeout_s,
             default_language=self.default_language,
             default_project=self.default_project,
             default_task=self.default_task,

@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import copy
 import json
+import logging
 import random
 import socket
 import time
@@ -13,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional, Tuple
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from codroid_api.auto_socket import (
     AutoSocketBackend,
@@ -38,6 +40,9 @@ from codroid_api.onrobot import (
 )
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 @dataclass
 class CodroidConfig:
     """Runtime config for a Codroid websocket connection."""
@@ -55,6 +60,10 @@ class CodroidConfig:
     robot_login_name: str = "web"
     robot_password: str = ""
     robot_ws_type: str = "wsrobot"
+    websocket_open_timeout_s: float = 5.0
+    websocket_close_timeout_s: float = 2.0
+    websocket_ping_interval_s: Optional[float] = 20.0
+    websocket_ping_timeout_s: Optional[float] = 30.0
 
     # Project defaults.
     default_language: str = "EN"
@@ -126,32 +135,54 @@ class CodroidAPI:
     async def connect(self) -> None:
         if self._ws is not None:
             return
-        connect_kwargs: Dict[str, Any] = {}
+        connect_kwargs: Dict[str, Any] = {
+            "open_timeout": self.config.websocket_open_timeout_s,
+            "close_timeout": self.config.websocket_close_timeout_s,
+            "ping_interval": self.config.websocket_ping_interval_s,
+            "ping_timeout": self.config.websocket_ping_timeout_s,
+        }
         if self.config.origin:
             connect_kwargs["origin"] = self.config.origin
         self._ws = await websockets.connect(self.config.ws_url, **connect_kwargs)
         self._recv_task = asyncio.create_task(self._receiver())
+        self._recv_task.add_done_callback(self._consume_receiver_exception)
 
     async def close(self) -> None:
         if self._recv_task:
             self._recv_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, ConnectionClosed, TimeoutError):
                 await self._recv_task
-            except asyncio.CancelledError:
-                pass
+            self._recv_task = None
         if self._ws is not None:
-            await self._ws.close()
+            with contextlib.suppress(ConnectionClosed, TimeoutError, OSError):
+                await self._ws.close()
             self._ws = None
+
+    @staticmethod
+    def _consume_receiver_exception(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        with contextlib.suppress(asyncio.CancelledError):
+            exc = task.exception()
+            if exc is not None:
+                LOGGER.debug("Websocket receiver stopped: %s", exc)
 
     async def _receiver(self) -> None:
         if self._ws is None:
             return
-        async for message in self._ws:
-            try:
-                payload = json.loads(message)
-            except json.JSONDecodeError:
-                payload = {"raw": message}
-            await self._messages.put(payload)
+        try:
+            async for message in self._ws:
+                try:
+                    payload = json.loads(message)
+                except json.JSONDecodeError:
+                    payload = {"raw": message}
+                await self._messages.put(payload)
+        except asyncio.CancelledError:
+            raise
+        except ConnectionClosed as exc:
+            LOGGER.debug("Websocket receiver closed: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Websocket receiver failed: %s", exc, exc_info=True)
 
     async def listen(self) -> AsyncIterator[Dict[str, Any]]:
         while True:

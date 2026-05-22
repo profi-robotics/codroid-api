@@ -34,6 +34,17 @@ Required for most flows:
 - `CODROID_USER_PASSWORD` (or `CODROID_USERCODE`)
 - `CODROID_DEFAULT_PROJECT`, `CODROID_DEFAULT_TASK`, `CODROID_DEFAULT_LABEL` (for `run_project`)
 
+Websocket stability knobs:
+
+- `CODROID_WEBSOCKET_OPEN_TIMEOUT_S` controls the opening handshake timeout
+  (default `5.0`). Keep UI-level connection timeouts higher than this value.
+- `CODROID_WEBSOCKET_CLOSE_TIMEOUT_S` controls graceful close waits (default
+  `2.0`).
+- `CODROID_WEBSOCKET_PING_INTERVAL_S` and `CODROID_WEBSOCKET_PING_TIMEOUT_S`
+  control websocket keepalive behavior. Pass `None` for
+  `websocket_ping_interval_s` in a custom `CodroidConfig` only when keepalive
+  pings must be disabled for a specific controller path.
+
 The defaults in `CodroidSettings` and `.env.example` are placeholders. Do not
 commit real controller credentials, user codes, HAR files, cookies, or project
 exports that contain site-specific data.

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import types
 import unittest
 from unittest import mock
 
-from codroid_api.client import CodroidAPI
+from codroid_api.client import CodroidAPI, CodroidConfig
 from codroid_api.robot_session import RobotSession
 from codroid_api.settings import CodroidSettings
 
@@ -90,7 +91,69 @@ class _FakeAPI:
             self._ws.state = "CLOSED"
 
 
+class _FakeWebSocket:
+    def __init__(self) -> None:
+        self.closed = False
+        self.close_code = None
+        self.state = "OPEN"
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(60.0)
+        raise StopAsyncIteration
+
+    async def close(self) -> None:
+        self.closed = True
+        self.close_code = 1000
+        self.state = "CLOSED"
+
+
+class _FailingWebSocket:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise RuntimeError("receiver failed")
+
+
 class ControlHandoffTests(unittest.IsolatedAsyncioTestCase):
+    async def test_websocket_connect_uses_configured_timeouts(self) -> None:
+        api = CodroidAPI(
+            CodroidConfig(
+                host="host",
+                port=9098,
+                websocket_open_timeout_s=3.0,
+                websocket_close_timeout_s=1.0,
+                websocket_ping_interval_s=None,
+                websocket_ping_timeout_s=12.0,
+            )
+        )
+        fake_ws = _FakeWebSocket()
+
+        with mock.patch(
+            "codroid_api.client.websockets.connect",
+            new=mock.AsyncMock(return_value=fake_ws),
+        ) as connect_mock:
+            await api.connect()
+
+        connect_mock.assert_awaited_once_with(
+            "ws://host:9098/",
+            open_timeout=3.0,
+            close_timeout=1.0,
+            ping_interval=None,
+            ping_timeout=12.0,
+            origin="http://codroid-controller.local:9098",
+        )
+        await api.close()
+
+    async def test_receiver_task_swallows_background_errors(self) -> None:
+        api = CodroidAPI()
+        api._ws = _FailingWebSocket()
+
+        await api._receiver()
+
     async def test_ws_login_with_password_persists_runtime_context(self) -> None:
         api = CodroidAPI()
         with mock.patch.object(
@@ -186,6 +249,27 @@ class ControlHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("send:user:wslogout", user_api.calls)
         self.assertIn("__aexit__", user_api.calls)
         self.assertTrue(RobotSession._api_is_open(robot_api))
+
+    async def test_failed_user_connection_closes_partial_api(self) -> None:
+        session = RobotSession(release_grace_period_s=0.0)
+        user_api = _FakeAPI()
+
+        async def _fail_enter():
+            user_api.calls.append("__aenter__")
+            raise TimeoutError("timed out during opening handshake")
+
+        user_api.__aenter__ = _fail_enter
+
+        with mock.patch(
+            "codroid_api.robot_session.CodroidAPI",
+            return_value=user_api,
+        ):
+            with self.assertRaisesRegex(TimeoutError, "opening handshake"):
+                await session.connect("ws://host:9000/")
+
+        self.assertIn("__aexit__", user_api.calls)
+        self.assertIsNone(session.user_api)
+        self.assertIsNone(session.user_uri)
 
     async def test_release_control_verification_failure_sets_error(self) -> None:
         session = RobotSession(release_grace_period_s=0.0)
