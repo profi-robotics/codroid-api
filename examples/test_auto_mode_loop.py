@@ -21,8 +21,8 @@ def _setup_logging(debug: bool) -> None:
 
 
 async def _move_cycle(api: CodroidAPI, iterations: int, hold_seconds: float) -> None:
-    logger.info("Setting manual move rate to 100%% and Auto mode")
-    await api.set_manual_move_rate(1.0)
+    logger.info("Setting motion speed multiplier to 100%% and Auto mode")
+    await api.set_speed_multiplier(1.0)
     await api.set_auto_mode()
 
     for index in range(1, iterations + 1):

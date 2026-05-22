@@ -98,6 +98,33 @@ class AutoSocketTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(NotImplementedError, "linear CPOS"):
             await api.move_to_target_optimal(reset_after=False)
 
+    async def test_speed_multiplier_sets_auto_and_manual_rates(self) -> None:
+        api = CodroidAPI()
+
+        with mock.patch.object(api, "set_params", new=mock.AsyncMock()) as set_params:
+            await api.set_speed_multiplier(0.35)
+
+        set_params.assert_awaited_once_with(
+            [
+                {"path": api.config.control_paths.move_rate, "value": 0.35},
+                {
+                    "path": api.config.control_paths.manual_move_rate,
+                    "value": 0.35,
+                },
+            ]
+        )
+
+    async def test_auto_move_rate_sets_move_rate_only(self) -> None:
+        api = CodroidAPI()
+
+        with mock.patch.object(api, "set_param", new=mock.AsyncMock()) as set_param:
+            await api.set_auto_move_rate(0.7)
+
+        set_param.assert_awaited_once_with(
+            api.config.control_paths.move_rate,
+            0.7,
+        )
+
     async def test_auto_socket_mode_context_restores_previous_backend(self) -> None:
         api = CodroidAPI()
         previous = _FakeAutoSocketBackend()

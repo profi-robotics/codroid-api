@@ -64,6 +64,7 @@ class RobotControlPaths:
 
     command: str = "Robot/Control/command"
     command_heartbeat: str = "Robot/Control/commandHeart"
+    move_rate: str = "Robot/Control/moveRate"
     manual_move_rate: str = "Robot/Control/manualMoveRate"
     jog_reference: str = "Robot/Control/jogReference"
     jog_mode: str = "Robot/Control/jogMode"

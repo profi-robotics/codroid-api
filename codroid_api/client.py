@@ -1110,9 +1110,21 @@ class CodroidAPI:
         """Set the manual movement rate (0.0 - 1.0) via setparam."""
         await self.set_param(self.config.control_paths.manual_move_rate, rate)
 
+    async def set_auto_move_rate(self, rate: float) -> None:
+        """Set the automatic/program movement rate (0.0 - 1.0) via setparam."""
+        await self.set_param(self.config.control_paths.move_rate, rate)
+
     async def set_speed_multiplier(self, rate: float) -> None:
-        """Alias for setting the manual movement rate."""
-        await self.set_manual_move_rate(rate)
+        """Set both automatic/program and manual movement rates."""
+        await self.set_params(
+            [
+                {"path": self.config.control_paths.move_rate, "value": rate},
+                {
+                    "path": self.config.control_paths.manual_move_rate,
+                    "value": rate,
+                },
+            ]
+        )
 
     async def set_jog_reference(self, reference: int) -> None:
         """Set jog reference (coordinate/tool) via setparam."""

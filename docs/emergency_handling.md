@@ -287,7 +287,7 @@ Helper scripts under `examples/` mirror known controller behaviors for fast veri
 - `examples/test_emergency_button.py` watches emergency button warning transitions.
 - `examples/test_overspeed_joint_protection.py` monitors overspeed and joint protection warnings.
 - `examples/test_rescue_mode.py` reports wrong tool/payload errors and exposes Rescue mode operations (`enter_rescue_mode`, `exit_rescue_mode`, `clear_tool_error`) plus an `on` command that powers the robot on.
-- `examples/test_auto_mode_loop.py` exercises the automatic movement between candle and safe presets at 100% manual move rate so you can verify the auto workflow end-to-end.
+- `examples/test_auto_mode_loop.py` exercises the automatic movement between candle and safe presets at a 100% shared speed multiplier (`moveRate` and `manualMoveRate`) so you can verify the auto workflow end-to-end.
 
 Run them against a live connection when reproducing the recorded faults.
 
