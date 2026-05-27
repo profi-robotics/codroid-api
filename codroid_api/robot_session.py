@@ -508,7 +508,13 @@ class RobotSession:
             while time.monotonic() < deadline:
                 try:
                     message = await user_api.recv(timeout=1.0)
-                except TimeoutError:
+                except (TimeoutError, asyncio.TimeoutError):
+                    continue
+                if not isinstance(message, dict):
+                    LOGGER.debug(
+                        "Ignoring non-object user websocket message during login: %r",
+                        message,
+                    )
                     continue
                 if message.get("action") == "online":
                     break

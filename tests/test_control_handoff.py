@@ -18,9 +18,15 @@ class _FakeWS:
 
 
 class _FakeAPI:
-    def __init__(self, *, keep_open_on_exit: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        keep_open_on_exit: bool = False,
+        recv_messages: list[object] | None = None,
+    ) -> None:
         self._ws = _FakeWS()
         self.keep_open_on_exit = keep_open_on_exit
+        self.recv_messages = list(recv_messages or [{"action": "online"}])
         self.calls: list[str] = []
         self.config = types.SimpleNamespace(
             username="operator",
@@ -68,6 +74,11 @@ class _FakeAPI:
 
     async def recv(self, timeout: float = 1.0) -> dict:
         self.calls.append(f"recv:{timeout}")
+        if self.recv_messages:
+            message = self.recv_messages.pop(0)
+            if isinstance(message, BaseException):
+                raise message
+            return message
         return {"action": "online"}
 
     async def listen(self):
@@ -249,6 +260,49 @@ class ControlHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("send:user:wslogout", user_api.calls)
         self.assertIn("__aexit__", user_api.calls)
         self.assertTrue(RobotSession._api_is_open(robot_api))
+
+    async def test_user_login_ignores_non_dict_boot_messages(self) -> None:
+        settings = CodroidSettings(
+            host="host",
+            ws_port=9098,
+            robot_port=9000,
+            keep_user_web_session=False,
+        )
+        session = RobotSession(settings, release_grace_period_s=0.0)
+        user_api = _FakeAPI(recv_messages=[None, {"action": "online"}])
+        robot_api = _FakeAPI()
+
+        with mock.patch(
+            "codroid_api.robot_session.CodroidAPI",
+            side_effect=[user_api, robot_api],
+        ):
+            connected = await session.connect("ws://host:9000/")
+
+        self.assertIs(connected, robot_api)
+        self.assertIn("recv:1.0", user_api.calls)
+        self.assertIs(session.robot_api, robot_api)
+
+    async def test_user_login_retries_user_online_timeout(self) -> None:
+        settings = CodroidSettings(
+            host="host",
+            ws_port=9098,
+            robot_port=9000,
+            keep_user_web_session=False,
+        )
+        session = RobotSession(settings, release_grace_period_s=0.0)
+        user_api = _FakeAPI(
+            recv_messages=[asyncio.TimeoutError(), {"action": "online"}]
+        )
+        robot_api = _FakeAPI()
+
+        with mock.patch(
+            "codroid_api.robot_session.CodroidAPI",
+            side_effect=[user_api, robot_api],
+        ):
+            connected = await session.connect("ws://host:9000/")
+
+        self.assertIs(connected, robot_api)
+        self.assertEqual(user_api.calls.count("recv:1.0"), 2)
 
     async def test_failed_user_connection_closes_partial_api(self) -> None:
         session = RobotSession(release_grace_period_s=0.0)
